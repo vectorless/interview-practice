@@ -1,0 +1,534 @@
+import * as P from './prompts.js';
+
+const $ = (id) => document.getElementById(id);
+
+const store = {
+  get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* ignore */ } },
+};
+
+// ===========================================================================
+// Server calls
+// ===========================================================================
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, opts);
+  if (!r.ok) {
+    let msg = `${r.status} ${r.statusText}`;
+    try { msg = (await r.json()).error || msg; } catch { /* not JSON */ }
+    throw new Error(msg);
+  }
+  return r;
+}
+
+function postJson(path, body) {
+  return api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+}
+
+async function chat(system, messages, maxTokens) {
+  const r = await postJson('/api/chat', { system, messages, maxTokens });
+  return (await r.json()).text;
+}
+
+function parseJson(text) {
+  const s = text.indexOf('{');
+  const e = text.lastIndexOf('}');
+  if (s < 0 || e < s) throw new Error('The model did not return JSON:\n' + text.slice(0, 300));
+  return JSON.parse(text.slice(s, e + 1));
+}
+
+// ===========================================================================
+// Settings
+// ===========================================================================
+
+let config = null;
+
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+const NEEDS_KEY = { anthropic: 'anthropic', xai: 'xai', elevenlabs: 'elevenlabs', browser: null };
+const LABEL = { anthropic: 'Claude', xai: 'Grok', elevenlabs: 'ElevenLabs', browser: 'Browser' };
+const KEY_LABEL = { anthropic: 'Anthropic', elevenlabs: 'ElevenLabs', xai: 'xAI (Grok)' };
+const MODEL_FIELDS = [
+  ['anthropic', 'Claude model'],
+  ['anthropicEffort', 'Claude effort'],
+  ['xai', 'Grok model'],
+  ['xaiEffort', 'Grok effort'],
+  ['elevenlabsTts', 'ElevenLabs TTS model'],
+  ['elevenlabsVoice', 'ElevenLabs voice ID'],
+  ['elevenlabsStt', 'ElevenLabs STT model'],
+  ['xaiVoice', 'Grok voice'],
+  ['xaiStt', 'Grok STT model'],
+];
+
+function providerUsable(value) {
+  if (value === 'browser') return true;
+  return config.keys[NEEDS_KEY[value]]?.set;
+}
+
+async function loadConfig() {
+  config = await (await api('/api/config')).json();
+  // If a chosen provider has no key but another option does, switch to it.
+  const patch = {};
+  for (const sel of document.querySelectorAll('select[data-provider]')) {
+    const kind = sel.dataset.provider;
+    if (providerUsable(config.providers[kind])) continue;
+    const alt = [...sel.options].map((o) => o.value).find((v) => providerUsable(v) && !(v === 'browser' && kind === 'stt' && !SpeechRecognition));
+    if (alt) patch[kind] = alt;
+  }
+  if (Object.keys(patch).length) await saveConfig({ providers: patch });
+  else renderSettings();
+}
+
+async function saveConfig(patch) {
+  config = await (await postJson('/api/config', patch)).json();
+  renderSettings();
+}
+
+function renderSettings() {
+  for (const sel of document.querySelectorAll('select[data-provider]')) {
+    const kind = sel.dataset.provider;
+    for (const opt of sel.options) {
+      opt.dataset.label ??= opt.textContent;
+      let note = '';
+      if (!providerUsable(opt.value)) note = ' — no key';
+      if (opt.value === 'browser' && kind === 'stt' && !SpeechRecognition) note = ' — not supported here';
+      opt.disabled = Boolean(note);
+      opt.textContent = opt.dataset.label + note;
+    }
+    sel.value = config.providers[kind];
+  }
+
+  $('keyStatus').innerHTML = Object.entries(config.keys).map(([name, k]) => `
+    <label>${KEY_LABEL[name]}</label>
+    <span class="${k.set ? 'key-ok' : 'key-missing'}">${k.set ? '✓ set' : 'not set'} <code>${k.envVar}</code></span>
+  `).join('');
+
+  const fields = $('modelFields');
+  if (!fields.children.length) {
+    for (const [key, label] of MODEL_FIELDS) {
+      const l = document.createElement('label');
+      l.textContent = label;
+      l.htmlFor = 'm_' + key;
+      const input = document.createElement('input');
+      input.id = 'm_' + key;
+      input.addEventListener('change', () => saveConfig({ models: { [key]: input.value } }));
+      fields.append(l, input);
+    }
+  }
+  for (const [key] of MODEL_FIELDS) $('m_' + key).value = config.models[key] ?? '';
+
+  const p = config.providers;
+  $('chips').textContent = `${LABEL[p.inference]} · STT ${LABEL[p.stt]} · TTS ${LABEL[p.tts]}`;
+}
+
+for (const sel of document.querySelectorAll('select[data-provider]')) {
+  sel.addEventListener('change', () => saveConfig({ providers: { [sel.dataset.provider]: sel.value } }));
+}
+$('settingsBtn').addEventListener('click', () => { $('settings').hidden = !$('settings').hidden; });
+$('refreshBtn').addEventListener('click', loadConfig);
+
+// ===========================================================================
+// Setup: job spec -> question plan
+// ===========================================================================
+
+let plan = store.get('plan');
+$('jobSpec').value = store.get('jobSpec') || '';
+$('jobSpec').addEventListener('input', () => store.set('jobSpec', $('jobSpec').value));
+
+function renderPlan() {
+  $('plan').hidden = !plan?.questions?.length;
+  if (!plan) return;
+  $('planTitle').textContent = plan.role ? `Questions — ${plan.role}` : 'Questions';
+  const ol = $('questions');
+  ol.innerHTML = '';
+  plan.questions.forEach((q, i) => {
+    const li = document.createElement('li');
+    li.innerHTML = `<div class="q"><span class="text"></span><span class="tag"></span><button title="Remove">×</button></div>`;
+    li.querySelector('.text').textContent = q.text;
+    const tag = li.querySelector('.tag');
+    tag.textContent = q.type;
+    tag.classList.add(q.type);
+    li.querySelector('button').addEventListener('click', () => {
+      plan.questions.splice(i, 1);
+      store.set('plan', plan);
+      renderPlan();
+    });
+    ol.append(li);
+  });
+}
+
+$('genBtn').addEventListener('click', async () => {
+  const spec = $('jobSpec').value.trim();
+  $('genError').textContent = '';
+  if (!spec) { $('genError').textContent = 'Paste a job spec first.'; return; }
+  const btn = $('genBtn');
+  btn.disabled = true;
+  btn.textContent = 'Generating…';
+  try {
+    const text = await chat(P.questionPlanSystem, [{ role: 'user', content: P.questionPlanUser(spec, Number($('qCount').value)) }], 4000);
+    const data = parseJson(text);
+    if (!Array.isArray(data.questions) || !data.questions.length) throw new Error('No questions in the response.');
+    plan = { role: data.role || 'this role', jobSpec: spec, questions: data.questions };
+    store.set('plan', plan);
+    renderPlan();
+  } catch (e) {
+    $('genError').textContent = e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Generate questions';
+  }
+});
+
+// ===========================================================================
+// Speaking (TTS)
+// ===========================================================================
+
+let stopCurrentSpeech = null;
+
+function speak(text) {
+  return config.providers.tts === 'browser' ? speakBrowser(text) : speakServer(text);
+}
+
+function speakBrowser(text) {
+  return new Promise((resolve) => {
+    const u = new SpeechSynthesisUtterance(text);
+    const voices = speechSynthesis.getVoices().filter((v) => v.lang.startsWith('en'));
+    u.voice = voices.find((v) => v.default) || voices[0] || null;
+    u.rate = 1.02;
+    const done = () => { stopCurrentSpeech = null; resolve(); };
+    u.onend = done;
+    u.onerror = done;
+    stopCurrentSpeech = () => speechSynthesis.cancel();
+    speechSynthesis.cancel();
+    speechSynthesis.speak(u);
+  });
+}
+
+async function speakServer(text) {
+  const blob = await (await postJson('/api/tts', { text })).blob();
+  const url = URL.createObjectURL(blob);
+  return new Promise((resolve) => {
+    const audio = new Audio(url);
+    const done = () => {
+      stopCurrentSpeech = null;
+      URL.revokeObjectURL(url);
+      resolve();
+    };
+    audio.onended = done;
+    audio.onerror = done;
+    stopCurrentSpeech = () => { audio.pause(); done(); };
+    audio.play().catch(done);
+  });
+}
+
+// ===========================================================================
+// Listening (STT)
+// ===========================================================================
+
+let mic = null;
+let meterRaf = 0;
+
+async function ensureMic() {
+  if (mic) return;
+  mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+  const ctx = new AudioContext();
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 512;
+  ctx.createMediaStreamSource(mic).connect(analyser);
+  const data = new Uint8Array(analyser.fftSize);
+  const bar = $('meter').querySelector('i');
+  const tick = () => {
+    analyser.getByteTimeDomainData(data);
+    let peak = 0;
+    for (const v of data) peak = Math.max(peak, Math.abs(v - 128));
+    bar.style.width = Math.min(100, (peak / 64) * 100) + '%';
+    meterRaf = requestAnimationFrame(tick);
+  };
+  tick();
+}
+
+// Each listener has start() and finish() -> Promise<string>, plus abort().
+function serverListener() {
+  const chunks = [];
+  const rec = new MediaRecorder(mic);
+  rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+  const stopped = new Promise((r) => { rec.onstop = r; });
+  return {
+    start() { rec.start(); },
+    abort() { if (rec.state !== 'inactive') rec.stop(); },
+    async finish() {
+      if (rec.state !== 'inactive') rec.stop();
+      await stopped;
+      const blob = new Blob(chunks, { type: rec.mimeType });
+      let wav;
+      try { wav = await toWav(blob); } catch { return ''; } // nothing decodable recorded
+      const r = await api('/api/stt', { method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body: wav });
+      return (await r.json()).text || '';
+    },
+  };
+}
+
+function browserListener() {
+  const rec = new SpeechRecognition();
+  rec.continuous = true;
+  rec.interimResults = true;
+  rec.lang = navigator.language || 'en-US';
+  let finals = '';
+  let interim = '';
+  let active = true;
+  let resolveEnd;
+  const ended = new Promise((r) => { resolveEnd = r; });
+
+  rec.onresult = (e) => {
+    interim = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const t = e.results[i][0].transcript;
+      if (e.results[i].isFinal) finals += t.trim() + ' ';
+      else interim += t;
+    }
+    $('live').textContent = (finals + interim).trim();
+  };
+  rec.onerror = (e) => {
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+      active = false;
+      showError('Browser speech recognition was blocked. Allow the microphone, or pick another STT provider in Settings.');
+    }
+  };
+  rec.onend = () => {
+    // Chrome stops after long silences; keep going until the user presses Space.
+    if (active) { try { rec.start(); return; } catch { /* fall through */ } }
+    resolveEnd();
+  };
+  return {
+    start() { rec.start(); },
+    abort() { active = false; rec.abort(); },
+    async finish() {
+      active = false;
+      rec.stop();
+      await ended;
+      return (finals + interim).trim();
+    },
+  };
+}
+
+// Re-encode whatever MediaRecorder produced as 16 kHz mono WAV, which every
+// STT provider accepts regardless of the browser's native recording format.
+async function toWav(blob) {
+  const ctx = new AudioContext();
+  const decoded = await ctx.decodeAudioData(await blob.arrayBuffer());
+  ctx.close();
+  const rate = 16000;
+  const off = new OfflineAudioContext(1, Math.max(1, Math.ceil(decoded.duration * rate)), rate);
+  const src = off.createBufferSource();
+  src.buffer = decoded;
+  src.connect(off.destination);
+  src.start();
+  const pcm = (await off.startRendering()).getChannelData(0);
+
+  const view = new DataView(new ArrayBuffer(44 + pcm.length * 2));
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) view.setUint8(o + i, s.charCodeAt(i)); };
+  str(0, 'RIFF'); view.setUint32(4, 36 + pcm.length * 2, true); str(8, 'WAVE');
+  str(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+  view.setUint32(24, rate, true); view.setUint32(28, rate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+  str(36, 'data'); view.setUint32(40, pcm.length * 2, true);
+  for (let i = 0; i < pcm.length; i++) {
+    const s = Math.max(-1, Math.min(1, pcm[i]));
+    view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+  return new Blob([view], { type: 'audio/wav' });
+}
+
+// ===========================================================================
+// Interview loop
+// ===========================================================================
+
+let iv = null;      // current interview session
+let state = 'idle'; // idle | thinking | speaking | listening | transcribing | done
+let listener = null;
+
+function setState(s, text) {
+  state = s;
+  $('status').dataset.state = s;
+  $('statusText').innerHTML = text;
+  $('meter').hidden = s !== 'listening';
+  $('doneBtn').disabled = s !== 'listening';
+}
+
+function showError(msg) { $('ivError').textContent = msg || ''; }
+
+function addLog(who, text) {
+  iv.log.push({ who, text });
+  const div = document.createElement('div');
+  div.className = 'turn ' + (who === 'Interviewer' ? 'interviewer' : 'you');
+  div.innerHTML = '<div class="who"></div><div class="body"></div>';
+  div.querySelector('.who').textContent = who;
+  div.querySelector('.body').textContent = text;
+  $('log').prepend(div); // newest on top, next to the controls
+}
+
+function show(section) {
+  // Feedback is revealed separately, under the interview, once requested.
+  for (const id of ['setup', 'interview', 'feedback']) $(id).hidden = id !== section;
+}
+
+async function startInterview() {
+  if (!plan?.questions?.length) return;
+  document.activeElement?.blur(); // so Space doesn't press a focused button
+  iv = { log: [], history: [], qIndex: 0, followUps: 0, started: false, ended: false };
+  $('log').innerHTML = '';
+  $('live').textContent = '';
+  $('afterRow').hidden = true;
+  $('endBtn').hidden = false;
+  $('settings').hidden = true;
+  show('interview');
+  showError('');
+  try {
+    await ensureMic();
+  } catch {
+    showError('Microphone access was denied. Allow it in the browser and try again.');
+    setState('idle', 'No microphone');
+    return;
+  }
+  await interviewerTurn(P.kickoffMessage(plan.questions[0]));
+}
+
+async function interviewerTurn(userContent) {
+  const my = iv;
+  $('retryBtn').hidden = true;
+  setState('thinking', 'Interviewer is thinking…');
+  my.history.push({ role: 'user', content: userContent });
+
+  let reply;
+  try {
+    reply = parseJson(await chat(P.interviewerSystem(plan), my.history, 2000));
+    if (!reply.say) throw new Error('Empty interviewer reply.');
+  } catch (e) {
+    if (iv !== my || my.ended) return;
+    my.history.pop();
+    showError(e.message);
+    setState('idle', 'Something went wrong');
+    $('retryBtn').hidden = false;
+    $('retryBtn').onclick = () => { showError(''); interviewerTurn(userContent); };
+    return;
+  }
+  if (iv !== my || my.ended) return;
+  my.history.push({ role: 'assistant', content: JSON.stringify(reply) });
+
+  if (reply.action === 'follow_up') {
+    my.followUps++;
+  } else if (reply.action === 'next') {
+    if (my.started) { my.qIndex++; my.followUps = 0; }
+    my.started = true;
+    if (my.qIndex >= plan.questions.length) reply.action = 'end';
+  }
+  const ending = reply.action === 'end';
+
+  addLog('Interviewer', reply.say);
+  setState('speaking', 'Interviewer speaking… <kbd>Space</kbd> to skip');
+  try { await speak(reply.say); } catch (e) { showError('Speech failed: ' + e.message); }
+  if (iv !== my || my.ended) return;
+
+  if (ending) return finishInterview();
+  startListening();
+}
+
+function startListening(note = '') {
+  $('live').textContent = note;
+  setState('listening', 'Listening — press <kbd>Space</kbd> when you’ve finished your answer');
+  try {
+    listener = config.providers.stt === 'browser' ? browserListener() : serverListener();
+    listener.start();
+  } catch (e) {
+    showError('Could not start listening: ' + e.message);
+    setState('idle', 'Not listening');
+  }
+}
+
+async function doneAnswering() {
+  if (state !== 'listening' || !listener) return;
+  const my = iv;
+  const l = listener;
+  listener = null;
+  setState('transcribing', 'Transcribing…');
+  let answer = '';
+  try {
+    answer = await l.finish();
+  } catch (e) {
+    if (iv !== my || my.ended) return;
+    showError('Transcription failed: ' + e.message);
+    return startListening('Transcription failed — please give that answer again.');
+  }
+  if (iv !== my || my.ended) return;
+  $('live').textContent = '';
+  if (!answer.trim()) return startListening('Didn’t catch anything — try again.');
+
+  showError('');
+  addLog('You', answer);
+  await interviewerTurn(P.answerMessage({
+    answer,
+    qIndex: my.qIndex,
+    followUps: my.followUps,
+    nextQuestion: plan.questions[my.qIndex + 1],
+  }));
+}
+
+function finishInterview() {
+  if (!iv) return;
+  iv.ended = true;
+  listener?.abort();
+  listener = null;
+  stopCurrentSpeech?.();
+  $('retryBtn').hidden = true;
+  $('live').textContent = '';
+  setState('done', 'Interview finished');
+  $('afterRow').hidden = false;
+  $('endBtn').hidden = true;
+}
+
+$('startBtn').addEventListener('click', startInterview);
+$('doneBtn').addEventListener('click', doneAnswering);
+$('endBtn').addEventListener('click', finishInterview);
+
+$('backBtn').addEventListener('click', () => {
+  setState('idle', 'Ready');
+  show('setup');
+});
+
+$('feedbackBtn').addEventListener('click', async () => {
+  const btn = $('feedbackBtn');
+  if (!iv?.log.length) return;
+  btn.disabled = true;
+  btn.textContent = 'Writing feedback…';
+  $('feedback').hidden = false;
+  $('feedbackText').textContent = '';
+  try {
+    const transcript = iv.log.map((t) => `${t.who === 'You' ? 'Candidate' : 'Interviewer'}: ${t.text}`).join('\n\n');
+    $('feedbackText').textContent = await chat(P.feedbackSystem, [{ role: 'user', content: P.feedbackUser({ role: plan.role, transcript }) }], 8000);
+    $('feedback').scrollIntoView({ behavior: 'smooth' });
+  } catch (e) {
+    $('feedbackText').textContent = 'Feedback failed: ' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Get feedback';
+  }
+});
+
+// Space: finish answering, or skip the interviewer's speech.
+function isTyping(t) { return t.matches?.('input, textarea, select, [contenteditable="true"]'); }
+document.addEventListener('keydown', (e) => {
+  if (e.code !== 'Space' || $('interview').hidden || isTyping(e.target)) return;
+  e.preventDefault();
+  if (e.repeat) return;
+  if (state === 'listening') doneAnswering();
+  else if (state === 'speaking') stopCurrentSpeech?.();
+});
+document.addEventListener('keyup', (e) => {
+  if (e.code === 'Space' && !$('interview').hidden && !isTyping(e.target)) e.preventDefault();
+});
+
+// ===========================================================================
+// Boot
+// ===========================================================================
+
+if ('speechSynthesis' in window) speechSynthesis.getVoices(); // warm up voice list
+renderPlan();
+loadConfig().catch((e) => { $('genError').textContent = 'Could not reach the local server: ' + e.message; });

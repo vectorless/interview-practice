@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Interview Practice</title>
+<style>
+  :root {
+    --bg: #fafaf9; --panel: #ffffff; --text: #1c1917; --muted: #78716c;
+    --line: #e7e5e4; --accent: #2563eb; --accent-text: #fff;
+    --rec: #dc2626; --ok: #16a34a; --warn: #b45309;
+    --tag-technical: #dbeafe; --tag-process: #fef3c7; --tag-relational: #dcfce7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0c0a09; --panel: #1c1917; --text: #f5f5f4; --muted: #a8a29e;
+      --line: #292524; --accent: #3b82f6;
+      --tag-technical: #1e3a5f; --tag-process: #4a3410; --tag-relational: #14432a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 24px 16px 80px; }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+  header h1 { font-size: 17px; font-weight: 600; margin: 0; flex: 1; }
+  .chips { color: var(--muted); font-size: 13px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px; margin-bottom: 16px; }
+  h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 12px; }
+  textarea, input, select {
+    width: 100%; font: inherit; color: inherit; background: var(--bg);
+    border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px;
+  }
+  textarea { min-height: 160px; resize: vertical; }
+  button {
+    font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text);
+    border-radius: 6px; padding: 7px 14px; cursor: pointer;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  button:disabled { opacity: .45; cursor: default; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+  .row .grow { flex: 1; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .error { color: var(--rec); font-size: 13px; white-space: pre-wrap; }
+  [hidden] { display: none !important; }
+
+  /* settings */
+  .grid { display: grid; grid-template-columns: 110px 1fr; gap: 8px 12px; align-items: center; }
+  .grid label { color: var(--muted); font-size: 13px; }
+  .key-ok { color: var(--ok); }
+  .key-missing { color: var(--muted); }
+  details { margin-top: 14px; }
+  summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  details .grid { margin-top: 10px; }
+  code { font-size: 12px; background: var(--bg); padding: 1px 5px; border-radius: 4px; border: 1px solid var(--line); }
+
+  /* questions */
+  ol#questions { margin: 14px 0 0; padding-left: 22px; }
+  ol#questions li { padding: 6px 0; border-top: 1px solid var(--line); }
+  ol#questions li:first-child { border-top: 0; }
+  .q { display: flex; gap: 8px; align-items: flex-start; }
+  .q span.text { flex: 1; }
+  .tag { font-size: 11px; padding: 1px 7px; border-radius: 10px; white-space: nowrap; margin-top: 2px; }
+  .tag.technical { background: var(--tag-technical); }
+  .tag.process { background: var(--tag-process); }
+  .tag.relational { background: var(--tag-relational); }
+  .q button { border: 0; background: none; color: var(--muted); padding: 0 4px; font-size: 16px; line-height: 1; }
+
+  /* interview */
+  .status { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 8px; background: var(--bg); border: 1px solid var(--line); }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }
+  .status[data-state="listening"] .dot { background: var(--rec); animation: pulse 1.2s infinite; }
+  .status[data-state="speaking"] .dot { background: var(--accent); }
+  .status[data-state="thinking"] .dot, .status[data-state="transcribing"] .dot { background: var(--warn); }
+  @keyframes pulse { 50% { opacity: .3; } }
+  .status .text { flex: 1; }
+  kbd { font: 12px ui-monospace, monospace; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 1px 6px; background: var(--panel); }
+  button.primary kbd { background: transparent; color: inherit; border-color: rgba(255,255,255,.5); }
+  .meter { width: 70px; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
+  .meter i { display: block; height: 100%; width: 0; background: var(--rec); transition: width 80ms linear; }
+  #live { color: var(--muted); font-style: italic; min-height: 1.5em; margin-top: 10px; }
+  #log { margin-top: 14px; display: flex; flex-direction: column; gap: 12px; }
+  .turn .who { font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 2px; }
+  .turn.interviewer .who { color: var(--accent); }
+  #feedbackText { white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Interview Practice</h1>
+    <span class="chips" id="chips"></span>
+    <button id="settingsBtn">Settings</button>
+  </header>
+
+  <section id="settings" hidden>
+    <h2>Providers</h2>
+    <div class="grid">
+      <label for="pInference">Inference</label>
+      <select id="pInference" data-provider="inference">
+        <option value="anthropic">Anthropic (Claude)</option>
+        <option value="xai">xAI (Grok)</option>
+      </select>
+      <label for="pStt">Speech to text</label>
+      <select id="pStt" data-provider="stt">
+        <option value="browser">Browser (free, Chrome/Edge)</option>
+        <option value="elevenlabs">ElevenLabs</option>
+        <option value="xai">xAI (Grok)</option>
+      </select>
+      <label for="pTts">Text to speech</label>
+      <select id="pTts" data-provider="tts">
+        <option value="browser">Browser (free)</option>
+        <option value="elevenlabs">ElevenLabs</option>
+        <option value="xai">xAI (Grok)</option>
+      </select>
+    </div>
+
+    <h2 style="margin-top:18px">API keys</h2>
+    <div class="grid" id="keyStatus"></div>
+    <p class="muted">Keys are read from the <code>.env</code> file next to <code>server.js</code>. Edit it and the change applies on the next request; press <em>Refresh</em> to update this view.</p>
+    <div class="row"><button id="refreshBtn">Refresh</button></div>
+
+    <details>
+      <summary>Models and voices</summary>
+      <div class="grid" id="modelFields"></div>
+    </details>
+  </section>
+
+  <section id="setup">
+    <h2>Job spec</h2>
+    <textarea id="jobSpec" placeholder="Paste the job description here…"></textarea>
+    <div class="row">
+      <label class="muted" for="qCount">Questions</label>
+      <select id="qCount" style="width:auto">
+        <option>5</option><option>6</option><option selected>8</option><option>10</option><option>12</option>
+      </select>
+      <span class="grow"></span>
+      <button id="genBtn" class="primary">Generate questions</button>
+    </div>
+    <div id="genError" class="error"></div>
+
+    <div id="plan" hidden>
+      <h2 style="margin-top:20px" id="planTitle">Questions</h2>
+      <ol id="questions"></ol>
+      <div class="row">
+        <span class="muted grow">The interviewer asks these in order and decides on follow-ups as you go.</span>
+        <button id="startBtn" class="primary">Start interview</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="interview" hidden>
+    <div class="status" id="status" data-state="idle">
+      <span class="dot"></span>
+      <span class="text" id="statusText">Ready</span>
+      <span class="meter" id="meter" hidden><i></i></span>
+    </div>
+    <div id="live"></div>
+    <div class="row">
+      <button id="doneBtn" class="primary" disabled>Done answering <kbd>Space</kbd></button>
+      <button id="retryBtn" hidden>Retry</button>
+      <span class="grow"></span>
+      <button id="endBtn">End interview</button>
+    </div>
+    <div id="ivError" class="error"></div>
+    <div id="log"></div>
+    <div class="row" id="afterRow" hidden>
+      <button id="feedbackBtn" class="primary">Get feedback</button>
+      <button id="backBtn">Back to setup</button>
+    </div>
+  </section>
+
+  <section id="feedback" hidden>
+    <h2>Feedback</h2>
+    <div id="feedbackText"></div>
+  </section>
+</main>
+<script type="module" src="app.js"></script>
+</body>
+</html>
