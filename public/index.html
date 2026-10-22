@@ -90,6 +90,8 @@
   .meter i { display: block; height: 100%; width: 0; background: var(--rec); transition: width 80ms linear; }
   #live { color: var(--muted); font-style: italic; min-height: 1.5em; margin-top: 10px; }
   #live:empty { display: none; }
+  .rec-time { font-variant-numeric: tabular-nums; }
+  .turn-links { display: flex; gap: 16px; }
   .log-head { margin-top: 6px; }
   #log { margin-top: 4px; display: flex; flex-direction: column; gap: 10px; }
   .turn .who { font-size: 12px; font-weight: 600; color: var(--muted); }
@@ -249,6 +251,7 @@
     <div class="status" id="status" data-state="idle">
       <span class="dot"></span>
       <span class="text" id="statusText">Ready</span>
+      <span id="recTime" class="muted rec-time" hidden>0:00</span>
       <span class="meter" id="meter" hidden><i></i></span>
     </div>
     <div id="live"></div>
@@ -256,6 +259,7 @@
       <button id="doneBtn" class="primary" disabled>Done answering <kbd>Space</kbd></button>
       <button id="playBtn" class="primary" hidden>▶ Play question</button>
       <button id="retryBtn" hidden>Retry</button>
+      <button id="reanswerBtn" hidden>Answer again</button>
       <span class="grow"></span>
       <button id="endBtn">End interview</button>
     </div>

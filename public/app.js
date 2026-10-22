@@ -300,6 +300,7 @@ let silentUrl = null;
 let currentUtterance = null; // keep a reference: Chrome drops speech whose utterance is garbage-collected
 
 function unlockAudio() {
+  try { getAudioCtx().resume().catch(() => {}); } catch { /* ignore */ }
   try {
     silentUrl ??= URL.createObjectURL(encodeWav(new Float32Array(1600), 16000)); // 0.1s of silence
     player.src = silentUrl;
@@ -368,8 +369,14 @@ async function speakServer(text) {
       player.src = url;
       player.play().catch((err) => {
         if (finished) return;
-        console.warn('Audio play blocked:', err.message);
-        offerPlay(() => player.play().catch(done));
+        if (err.name === 'NotAllowedError') {
+          console.warn('Audio play blocked:', err.message);
+          offerPlay(() => player.play().catch(done));
+        } else {
+          // e.g. the audio couldn't be decoded: don't wait forever.
+          showError('Could not play the interviewer’s audio: ' + err.message);
+          done();
+        }
       });
     });
   } finally {
@@ -384,13 +391,106 @@ async function speakServer(text) {
 let mic = null;
 let meterRaf = 0;
 
+// One AudioContext for the mic. Created/resumed inside a click (unlockAudio)
+// so it's allowed to run.
+let audioCtx = null;
+function getAudioCtx() {
+  audioCtx ??= new AudioContext();
+  return audioCtx;
+}
+
+// --- Continuous capture -------------------------------------------------------
+// The mic is captured all the time into a rolling buffer of raw samples, so an
+// answer can include a little audio from *before* listening started (you may
+// start talking the instant the question ends) and *after* Space is pressed
+// (the last word is often still being spoken). No codec, no re-encoding.
+
+const PRE_ROLL_S = 0.3;
+const POST_ROLL_MS = 700;
+const KEEP_IDLE_S = 2;
+
+const CAPTURE_WORKLET = `
+class Capture extends AudioWorkletProcessor {
+  constructor() { super(); this.buf = new Float32Array(4096); this.n = 0; }
+  process(inputs) {
+    const ch = inputs[0] && inputs[0][0];
+    if (ch) {
+      for (let i = 0; i < ch.length; i++) {
+        this.buf[this.n++] = ch[i];
+        if (this.n === this.buf.length) { this.port.postMessage(this.buf.slice(0)); this.n = 0; }
+      }
+    }
+    return true;
+  }
+}
+registerProcessor('capture', Capture);`;
+
+const pcm = { chunks: [], total: 0, rate: 0, captureFrom: null, lastAt: 0 };
+let captureReady = false;
+
+function onPcm(data) {
+  pcm.chunks.push({ start: pcm.total, data });
+  pcm.total += data.length;
+  pcm.lastAt = performance.now();
+  if (pcm.captureFrom === null) {
+    const keepFrom = pcm.total - KEEP_IDLE_S * pcm.rate;
+    while (pcm.chunks.length && pcm.chunks[0].start + pcm.chunks[0].data.length < keepFrom) pcm.chunks.shift();
+  }
+}
+
+function pcmSlice(from, to) {
+  const out = new Float32Array(Math.max(0, to - from));
+  for (const c of pcm.chunks) {
+    const s = Math.max(from, c.start);
+    const e = Math.min(to, c.start + c.data.length);
+    if (e > s) out.set(c.data.subarray(s - c.start, e - c.start), s - from);
+  }
+  return out;
+}
+
+// Average-and-decimate to 16 kHz (what STT models use).
+function downsample(samples, from, to) {
+  if (from === to) return samples;
+  const ratio = from / to;
+  const out = new Float32Array(Math.floor(samples.length / ratio));
+  for (let i = 0; i < out.length; i++) {
+    const a = Math.floor(i * ratio);
+    const b = Math.min(samples.length, Math.floor((i + 1) * ratio));
+    let sum = 0;
+    for (let j = a; j < b; j++) sum += samples[j];
+    out[i] = sum / Math.max(1, b - a);
+  }
+  return out;
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 async function ensureMic() {
   if (mic) return;
-  mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
-  const ctx = new AudioContext();
+  // Noise suppression is off: it can swallow quiet word beginnings and endings,
+  // and the STT models cope with background noise anyway.
+  mic = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: true, channelCount: 1 },
+  });
+  const ctx = getAudioCtx();
+  await ctx.resume().catch(() => {});
+  const source = ctx.createMediaStreamSource(mic);
+  try {
+    const url = URL.createObjectURL(new Blob([CAPTURE_WORKLET], { type: 'text/javascript' }));
+    await ctx.audioWorklet.addModule(url);
+    const node = new AudioWorkletNode(ctx, 'capture');
+    pcm.rate = ctx.sampleRate;
+    node.port.onmessage = (e) => onPcm(e.data);
+    const mute = ctx.createGain();
+    mute.gain.value = 0; // keeps the node running without making a sound
+    source.connect(node).connect(mute).connect(ctx.destination);
+    captureReady = true;
+  } catch (e) {
+    console.warn('Continuous capture unavailable, using MediaRecorder:', e);
+  }
   const analyser = ctx.createAnalyser();
   analyser.fftSize = 512;
-  ctx.createMediaStreamSource(mic).connect(analyser);
+  source.connect(analyser);
   const data = new Uint8Array(analyser.fftSize);
   const bar = $('meter').querySelector('i');
   const tick = () => {
@@ -403,25 +503,60 @@ async function ensureMic() {
   tick();
 }
 
-// Each listener has start() and finish() -> Promise<string>, plus abort().
-function serverListener() {
+// Listeners: start(); record() -> {wav, seconds} once all audio is in;
+// transcribe(wav) -> text (server STT only); abort().
+
+async function transcribeWav(wav) {
+  const r = await api('/api/stt', { method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body: wav });
+  return (await r.json()).text || '';
+}
+
+// Preferred: slice the continuous capture.
+function pcmListener() {
+  let from = 0;
+  return {
+    server: true,
+    start() {
+      from = Math.max(0, pcm.total - Math.round(PRE_ROLL_S * pcm.rate));
+      pcm.captureFrom = from;
+    },
+    abort() { pcm.captureFrom = null; },
+    async record() {
+      await sleep(POST_ROLL_MS); // let the last word arrive
+      const to = pcm.total;
+      pcm.captureFrom = null;
+      if (performance.now() - pcm.lastAt > 1000) throw new Error('The microphone stopped sending audio.');
+      const samples = pcmSlice(from, to);
+      return { wav: encodeWav(downsample(samples, pcm.rate, 16000), 16000), seconds: samples.length / pcm.rate };
+    },
+    transcribe: transcribeWav,
+  };
+}
+
+// Fallback if AudioWorklet isn't available: MediaRecorder.
+function mediaRecorderListener() {
   const chunks = [];
   const rec = new MediaRecorder(mic);
   rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
   const stopped = new Promise((r) => { rec.onstop = r; });
+  let startedAt = 0;
   return {
-    start() { rec.start(); },
+    server: true,
+    start() { rec.start(); startedAt = performance.now(); },
     abort() { if (rec.state !== 'inactive') rec.stop(); },
-    async finish() {
+    async record() {
+      await sleep(POST_ROLL_MS);
       if (rec.state !== 'inactive') rec.stop();
-      await stopped;
+      await stopped; // all chunks are delivered before onstop
       const blob = new Blob(chunks, { type: rec.mimeType });
-      let wav;
-      try { wav = await toWav(blob); } catch { return ''; } // nothing decodable recorded
-      const r = await api('/api/stt', { method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body: wav });
-      return (await r.json()).text || '';
+      return { wav: await toWav(blob), seconds: (performance.now() - startedAt) / 1000 };
     },
+    transcribe: transcribeWav,
   };
+}
+
+function serverListener() {
+  return captureReady && audioCtx?.state === 'running' ? pcmListener() : mediaRecorderListener();
 }
 
 function browserListener() {
@@ -455,14 +590,18 @@ function browserListener() {
     if (active) { try { rec.start(); return; } catch { /* fall through */ } }
     resolveEnd();
   };
+  let startedAt = 0;
   return {
-    start() { rec.start(); },
+    server: false,
+    start() { rec.start(); startedAt = performance.now(); },
     abort() { active = false; rec.abort(); },
-    async finish() {
+    // Browser recognition returns text directly; there's no audio to keep.
+    async record() {
+      await sleep(POST_ROLL_MS);
       active = false;
       rec.stop();
       await ended;
-      return (finals + interim).trim();
+      return { text: (finals + interim).trim(), seconds: (performance.now() - startedAt) / 1000 };
     },
   };
 }
@@ -510,6 +649,8 @@ function setState(s, text) {
   $('status').dataset.state = s;
   $('face').dataset.state = s;
   $('playBtn').hidden = true;
+  $('reanswerBtn').hidden = true;
+  $('recTime').hidden = s !== 'listening';
   $('statusText').innerHTML = text;
   $('meter').hidden = s !== 'listening';
   $('doneBtn').disabled = s !== 'listening';
@@ -520,19 +661,21 @@ function showError(msg) { $('ivError').textContent = msg || ''; }
 // --- Persistence: the session survives refreshes -----------------------------
 function saveSession() { if (iv) store.set('session', iv); }
 
-function addLog(who, text, action) {
+function addLog(who, text, action, meta = {}, audio = null) {
   // qIndex ties each line to its planned question, for per-answer feedback.
-  const turn = { who, text, qIndex: iv.qIndex, action };
+  const turn = { who, text, qIndex: iv.qIndex, action, ...meta };
   iv.log.push(turn);
+  if (audio) recordings.set(turn, audio);
   saveSession();
   renderTurn(turn, iv);
+  return turn;
 }
 
 // Short label shown while a line is collapsed.
 function turnLabel(turn) {
   if (turn.who === 'You') {
     const n = turn.text.trim().split(/\s+/).filter(Boolean).length;
-    return `${n} word${n === 1 ? '' : 's'}`;
+    return `${n} word${n === 1 ? '' : 's'}${turn.seconds ? ' · ' + fmtTime(turn.seconds) : ''}`;
   }
   if (turn.action === 'end') return 'Closing';
   if (turn.action === 'follow_up') return 'Follow-up';
@@ -584,12 +727,32 @@ function feedbackThread(session, turn) {
 
 function renderAnswerFeedback(area, turn, session) {
   area.innerHTML = '';
+  const links = document.createElement('div');
+  links.className = 'turn-links';
+  area.append(links);
+  const audio = recordings.get(turn);
+  if (audio) {
+    // Hear exactly what was sent to speech-to-text.
+    const play = document.createElement('button');
+    play.className = 'link';
+    play.textContent = '▶ Play recording';
+    let el = null;
+    play.addEventListener('click', () => {
+      play.blur();
+      if (el && !el.paused) { el.pause(); el.currentTime = 0; play.textContent = '▶ Play recording'; return; }
+      el ??= new Audio(URL.createObjectURL(audio));
+      el.onended = () => { play.textContent = '▶ Play recording'; };
+      el.play();
+      play.textContent = '■ Stop';
+    });
+    links.append(play);
+  }
   if (turn.feedback) return area.append(feedbackCard(turn.feedback));
   const btn = document.createElement('button');
   btn.className = 'link';
   btn.textContent = 'Get feedback';
   btn.addEventListener('click', () => getAnswerFeedback(area, turn, session, btn));
-  area.append(btn);
+  links.prepend(btn);
 }
 
 async function getAnswerFeedback(area, turn, session, btn) {
@@ -740,38 +903,97 @@ async function interviewerTurn(userContent) {
   startListening();
 }
 
+const fmtTime = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+let recTimer = null;
+
 function startListening(note = '') {
   $('live').textContent = note;
   setState('listening', 'Listening — press <kbd>Space</kbd> when you’ve finished your answer');
   try {
     listener = config.providers.stt === 'browser' ? browserListener() : serverListener();
     listener.start();
+    const t0 = performance.now();
+    clearInterval(recTimer);
+    $('recTime').textContent = '0:00';
+    recTimer = setInterval(() => {
+      if (state !== 'listening') { clearInterval(recTimer); return; }
+      $('recTime').textContent = fmtTime((performance.now() - t0) / 1000);
+    }, 250);
   } catch (e) {
     showError('Could not start listening: ' + e.message);
     setState('idle', 'Not listening');
   }
 }
 
+// Recordings of your answers, kept in memory for "Play recording" (not saved).
+const recordings = new WeakMap();
+
 async function doneAnswering() {
   if (state !== 'listening' || !listener) return;
   const my = iv;
   const l = listener;
   listener = null;
-  setState('transcribing', 'Transcribing…');
-  let answer = '';
+  setState('transcribing', 'Finishing recording…');
+
+  // 1. Get ALL the audio first (including a short tail after Space).
+  let rec;
   try {
-    answer = await l.finish();
+    rec = await l.record();
   } catch (e) {
     if (iv !== my || my.ended) return;
-    showError('Transcription failed: ' + e.message);
-    return startListening('Transcription failed — please give that answer again.');
+    showError('Recording failed: ' + e.message);
+    return startListening('Recording failed — please give that answer again.');
   }
   if (iv !== my || my.ended) return;
+
+  // 2. Only then transcribe it.
+  if (l.server) {
+    setState('transcribing', `Transcribing ${fmtTime(rec.seconds)} of audio…`);
+    try {
+      rec.text = await l.transcribe(rec.wav);
+    } catch (e) {
+      if (iv !== my || my.ended) return;
+      return offerTranscriptionRetry(my, l, rec, e);
+    }
+  }
+  if (iv !== my || my.ended) return;
+  await submitAnswer(my, rec);
+}
+
+// Keep the recording when transcription fails, so the answer isn't lost.
+function offerTranscriptionRetry(my, l, rec, err) {
+  showError('Transcription failed: ' + err.message);
+  setState('idle', `Your ${fmtTime(rec.seconds)} answer is saved — retry the transcription, or answer again`);
+  $('retryBtn').textContent = 'Retry transcription';
+  $('retryBtn').hidden = false;
+  $('reanswerBtn').hidden = false;
+  $('retryBtn').onclick = async () => {
+    $('retryBtn').hidden = $('reanswerBtn').hidden = true;
+    showError('');
+    setState('transcribing', `Transcribing ${fmtTime(rec.seconds)} of audio…`);
+    try {
+      rec.text = await l.transcribe(rec.wav);
+    } catch (e) {
+      if (iv === my && !my.ended) offerTranscriptionRetry(my, l, rec, e);
+      return;
+    }
+    if (iv === my && !my.ended) submitAnswer(my, rec);
+  };
+  $('reanswerBtn').onclick = () => {
+    $('retryBtn').hidden = $('reanswerBtn').hidden = true;
+    showError('');
+    startListening('Give that answer again.');
+  };
+}
+
+async function submitAnswer(my, rec) {
+  $('retryBtn').textContent = 'Retry';
+  const answer = (rec.text || '').trim();
   $('live').textContent = '';
-  if (!answer.trim()) return startListening('Didn’t catch anything — try again.');
+  if (!answer) return startListening('Didn’t catch anything — try again.');
 
   showError('');
-  addLog('You', answer);
+  addLog('You', answer, undefined, { seconds: Math.round(rec.seconds) }, rec.wav);
   await interviewerTurn(P.answerMessage({
     answer,
     qIndex: my.qIndex,
@@ -977,7 +1199,8 @@ let reloadPending = false;
 // The session itself is saved, so only in-flight work (a recording, a model
 // call, speech) would be lost.
 function safeToReload() {
-  return ['idle', 'done'].includes(state) && !$('genBtn').disabled && !$('feedbackBtn').disabled && feedbackInFlight === 0;
+  return ['idle', 'done'].includes(state) && !$('genBtn').disabled && !$('feedbackBtn').disabled && feedbackInFlight === 0
+    && $('reanswerBtn').hidden; // an unsent recording is waiting for "Retry transcription"
 }
 function requestReload() {
   if (safeToReload()) return location.reload();

@@ -37,7 +37,8 @@ You can also start with no speech keys at all: the **Browser** STT/TTS options a
 - The interviewer appears as a simple line-drawn face in a video-call tile: it talks while speaking, glances away while thinking and nods while you answer.
 - Transcript lines are collapsed so you listen rather than read; click a line, or **Show all text**, to read them.
 - No sound? Use **Settings → Test voice**. If the browser blocks audio, a **Play question** button appears.
-- **Space** while you're answering: finish your answer.
+- **Space** while you're answering: finish your answer. Recording continues for 0.7 s after Space (so your last word isn't clipped) and includes 0.3 s from just before listening started; only then is the complete audio sent for transcription. A timer shows how long you've been recording.
+- **▶ Play recording** under an answer plays exactly what was sent to speech-to-text (kept until you refresh). If transcription fails, the recording is kept and **Retry transcription** resends it.
 - **Space** while the interviewer is talking: skip to answering.
 - **Get feedback** under any of your answers: a high-quality model compares the answer with the question (and its follow-ups), then shows what worked, what was missing, the missing details explained, a stronger version of the answer, and a delivery tip. Takes up to a minute. Saved with the session.
 - **End interview** stops at any point; **Overall feedback** reviews the whole transcript, also with the high-quality model.
