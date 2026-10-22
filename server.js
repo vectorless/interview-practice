@@ -86,7 +86,9 @@ function publicConfig(cfg) {
   for (const [name, value] of Object.entries(cfg.keys)) {
     keys[name] = { set: Boolean(value), envVar: KEY_VARS[name] };
   }
-  return { keys, providers: cfg.providers, models: cfg.models };
+  const ws = anthropicWorkspace();
+  const anthropicWorkspaceId = { set: Boolean(ws), envVar: 'ANTHROPIC_WORKSPACE_ID', value: ws };
+  return { keys, anthropicWorkspaceId, providers: cfg.providers, models: cfg.models };
 }
 
 // ---------------------------------------------------------------------------
@@ -136,6 +138,31 @@ async function upstreamError(label, r) {
 // Inference
 // ---------------------------------------------------------------------------
 
+// Keys that aren't scoped to one workspace (organisation-level keys) must say
+// which workspace to use on every request.
+function anthropicWorkspace() {
+  return parseEnvFile().ANTHROPIC_WORKSPACE_ID || process.env.ANTHROPIC_WORKSPACE_ID || '';
+}
+
+function anthropicHeaders(key) {
+  const h = { 'x-api-key': key, 'anthropic-version': '2023-06-01' };
+  const ws = anthropicWorkspace();
+  if (ws) h['anthropic-workspace-id'] = ws;
+  return h;
+}
+
+// Best effort: list the workspaces this key can see, to put in the error.
+async function listAnthropicWorkspaces(key) {
+  try {
+    const r = await fetch('https://api.anthropic.com/v1/organizations/workspaces?include_default=true&limit=50', {
+      headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+    });
+    if (!r.ok) return '';
+    const { data = [] } = await r.json();
+    return data.filter((w) => !w.archived_at).map((w) => `  ${w.id}  (${w.name})`).join('\n');
+  } catch { return ''; }
+}
+
 async function chatAnthropic(cfg, { system, messages, maxTokens }) {
   const key = requireKey(cfg, 'anthropic', 'Anthropic');
   const body = {
@@ -148,14 +175,21 @@ async function chatAnthropic(cfg, { system, messages, maxTokens }) {
 
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
-    headers: {
-      'x-api-key': key,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-    },
+    headers: { ...anthropicHeaders(key), 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!r.ok) throw await upstreamError('Anthropic', r);
+  if (!r.ok) {
+    const err = await upstreamError('Anthropic', r);
+    if (/not scoped to a workspace/i.test(err.message)) {
+      const list = await listAnthropicWorkspaces(key);
+      err.message = 'Your Anthropic key is organisation-level, so it needs a workspace. '
+        + 'Add ANTHROPIC_WORKSPACE_ID=<workspace id> to .env (IDs are on the Workspaces page in the Claude Console).'
+        + (list ? `\n\nWorkspaces this key can use:\n${list}` : '');
+    } else if (/anthropic-workspace-id|Workspace .* not found/i.test(err.message)) {
+      err.message += '\n\nCheck ANTHROPIC_WORKSPACE_ID in .env.';
+    }
+    throw err;
+  }
   const data = await r.json();
   return (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('');
 }

@@ -101,6 +101,16 @@ function renderSettings() {
     <label>${KEY_LABEL[name]}</label>
     <span class="${k.set ? 'key-ok' : 'key-missing'}">${k.set ? '✓ set' : 'not set'} <code>${k.envVar}</code></span>
   `).join('');
+  const ws = config.anthropicWorkspaceId;
+  if (ws) {
+    const label = document.createElement('label');
+    label.textContent = 'Anthropic workspace';
+    const val = document.createElement('span');
+    val.className = ws.set ? 'key-ok' : 'key-missing';
+    val.innerHTML = `${ws.set ? '' : 'optional '}<code>${ws.envVar}</code> `;
+    if (ws.set) val.prepend(ws.value + ' ');
+    $('keyStatus').append(label, val);
+  }
 
   const fields = $('modelFields');
   if (!fields.children.length) {

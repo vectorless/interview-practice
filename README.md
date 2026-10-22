@@ -20,6 +20,7 @@ Put whichever keys you have in `.env`:
 | Variable | Used for |
 |---|---|
 | `ANTHROPIC_API_KEY` | Inference (Claude) |
+| `ANTHROPIC_WORKSPACE_ID` | Only for organisation-level Anthropic keys not scoped to a workspace (`wrkspc_…`) |
 | `ELEVENLABS_API_KEY` | Speech-to-text and text-to-speech |
 | `XAI_API_KEY` | Inference, STT and TTS (Grok) |
 
