@@ -138,7 +138,15 @@ function renderSettings() {
 for (const sel of document.querySelectorAll('select[data-provider]')) {
   sel.addEventListener('change', () => saveConfig({ providers: { [sel.dataset.provider]: sel.value } }));
 }
-$('settingsBtn').addEventListener('click', () => { $('settings').hidden = !$('settings').hidden; });
+// Settings is its own page: while it's open, the rest of the app is hidden
+// (and keeps its state underneath, so closing returns you where you were).
+function setSettingsOpen(open) {
+  $('settings').hidden = !open;
+  document.body.classList.toggle('settings-open', open);
+  $('settingsBtn').textContent = open ? 'Close' : 'Settings';
+  if (open) window.scrollTo(0, 0);
+}
+$('settingsBtn').addEventListener('click', () => setSettingsOpen($('settings').hidden));
 $('refreshBtn').addEventListener('click', loadConfig);
 
 // ===========================================================================
@@ -597,7 +605,7 @@ async function startInterview() {
   $('live').textContent = '';
   $('afterRow').hidden = true;
   $('endBtn').hidden = false;
-  $('settings').hidden = true;
+  setSettingsOpen(false);
   show('interview');
   showError('');
   try {
@@ -740,7 +748,7 @@ $('feedbackBtn').addEventListener('click', async () => {
 // Space: finish answering, or skip the interviewer's speech.
 function isTyping(t) { return t.matches?.('input, textarea, select, [contenteditable="true"]'); }
 document.addEventListener('keydown', (e) => {
-  if (e.code !== 'Space' || $('interview').hidden || isTyping(e.target)) return;
+  if (e.code !== 'Space' || $('interview').hidden || document.body.classList.contains('settings-open') || isTyping(e.target)) return;
   e.preventDefault();
   if (e.repeat) return;
   if (state === 'listening') doneAnswering();
