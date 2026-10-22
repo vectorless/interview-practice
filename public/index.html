@@ -92,6 +92,24 @@
   .turn .who { font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 2px; }
   .turn.interviewer .who { color: var(--accent); }
   #feedbackText { white-space: pre-wrap; }
+
+  /* per-answer feedback */
+  button.link { border: 0; background: none; padding: 4px 0 0; color: var(--accent); font-size: 13px; }
+  button.link:disabled { color: var(--muted); opacity: 1; }
+  .fb { margin-top: 8px; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--bg); font-size: 14px; }
+  .fb > summary { display: flex; gap: 10px; align-items: baseline; cursor: pointer; list-style: none; }
+  .fb > summary::-webkit-details-marker { display: none; }
+  .fb-summary { flex: 1; }
+  .rating { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; padding: 2px 8px; border-radius: 10px; white-space: nowrap; background: var(--line); }
+  .rating.strong { background: var(--tag-relational); }
+  .rating.good { background: var(--tag-technical); }
+  .rating.partial { background: var(--tag-process); }
+  .rating.weak { background: #fecaca; color: #7f1d1d; }
+  .fb-sec h3 { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin: 12px 0 4px; }
+  .fb-sec ul { margin: 0; padding-left: 18px; }
+  .fb-sec li { margin: 3px 0; }
+  .fb-sec p { margin: 0; }
+  .fb blockquote { margin: 0; padding: 8px 12px; border-left: 3px solid var(--accent); background: var(--panel); border-radius: 0 6px 6px 0; white-space: pre-wrap; }
 </style>
 </head>
 <body>
@@ -182,13 +200,13 @@
     <div id="ivError" class="error"></div>
     <div id="log"></div>
     <div class="row" id="afterRow" hidden>
-      <button id="feedbackBtn" class="primary">Get feedback</button>
+      <button id="feedbackBtn" class="primary">Overall feedback</button>
       <button id="backBtn">Back to setup</button>
     </div>
   </section>
 
   <section id="feedback" hidden>
-    <h2>Feedback</h2>
+    <h2>Overall feedback</h2>
     <div id="feedbackText"></div>
   </section>
 </main>

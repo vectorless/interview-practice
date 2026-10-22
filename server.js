@@ -56,6 +56,11 @@ const DEFAULTS = {
     anthropicEffort: 'low',
     xai: 'grok-4.7',
     xaiEffort: 'low',
+    // Feedback is slower but should be as good as possible.
+    anthropicFeedback: 'claude-opus-5-5',
+    anthropicFeedbackEffort: 'high',
+    xaiFeedback: 'grok-4.7',
+    xaiFeedbackEffort: 'high',
     elevenlabsTts: 'eleven_multilingual_v2',
     elevenlabsVoice: 'JBFqnCBsd6RMkjVDRZzb',
     elevenlabsStt: 'scribe_v2',
@@ -163,15 +168,19 @@ async function listAnthropicWorkspaces(key) {
   } catch { return ''; }
 }
 
-async function chatAnthropic(cfg, { system, messages, maxTokens }) {
+async function chatAnthropic(cfg, { system, messages, maxTokens, purpose }) {
   const key = requireKey(cfg, 'anthropic', 'Anthropic');
+  const fb = purpose === 'feedback';
+  const model = (fb && cfg.models.anthropicFeedback) || cfg.models.anthropic;
+  const effort = fb ? cfg.models.anthropicFeedbackEffort : cfg.models.anthropicEffort;
   const body = {
-    model: cfg.models.anthropic,
-    max_tokens: maxTokens || 4000,
+    model,
+    // Thinking counts toward max_tokens, so give feedback plenty of room.
+    max_tokens: fb ? Math.max(maxTokens || 0, 32000) : (maxTokens || 4000),
     system,
     messages,
   };
-  if (cfg.models.anthropicEffort) body.output_config = { effort: cfg.models.anthropicEffort };
+  if (effort) body.output_config = { effort };
 
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -194,14 +203,16 @@ async function chatAnthropic(cfg, { system, messages, maxTokens }) {
   return (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('');
 }
 
-async function chatXai(cfg, { system, messages, maxTokens }) {
+async function chatXai(cfg, { system, messages, maxTokens, purpose }) {
   const key = requireKey(cfg, 'xai', 'xAI (Grok)');
+  const fb = purpose === 'feedback';
+  const effort = fb ? cfg.models.xaiFeedbackEffort : cfg.models.xaiEffort;
   const body = {
-    model: cfg.models.xai,
-    max_tokens: maxTokens || 4000,
+    model: (fb && cfg.models.xaiFeedback) || cfg.models.xai,
+    max_tokens: fb ? Math.max(maxTokens || 0, 32000) : (maxTokens || 4000),
     messages: [{ role: 'system', content: system }, ...messages],
   };
-  if (cfg.models.xaiEffort) body.reasoning_effort = cfg.models.xaiEffort;
+  if (effort) body.reasoning_effort = effort;
 
   const call = (b) => fetch('https://api.x.ai/v1/chat/completions', {
     method: 'POST',

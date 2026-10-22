@@ -25,8 +25,9 @@ function postJson(path, body) {
   return api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 }
 
-async function chat(system, messages, maxTokens) {
-  const r = await postJson('/api/chat', { system, messages, maxTokens });
+// purpose 'feedback' makes the server use the high-quality feedback model.
+async function chat(system, messages, maxTokens, purpose) {
+  const r = await postJson('/api/chat', { system, messages, maxTokens, purpose });
   return (await r.json()).text;
 }
 
@@ -52,6 +53,10 @@ const MODEL_FIELDS = [
   ['anthropicEffort', 'Claude effort'],
   ['xai', 'Grok model'],
   ['xaiEffort', 'Grok effort'],
+  ['anthropicFeedback', 'Feedback model (Claude)'],
+  ['anthropicFeedbackEffort', 'Feedback effort (Claude)'],
+  ['xaiFeedback', 'Feedback model (Grok)'],
+  ['xaiFeedbackEffort', 'Feedback effort (Grok)'],
   ['elevenlabsTts', 'ElevenLabs TTS model'],
   ['elevenlabsVoice', 'ElevenLabs voice ID'],
   ['elevenlabsStt', 'ElevenLabs STT model'],
@@ -454,18 +459,125 @@ function showError(msg) { $('ivError').textContent = msg || ''; }
 function saveSession() { if (iv) store.set('session', iv); }
 
 function addLog(who, text) {
-  iv.log.push({ who, text });
+  // qIndex ties each line to its planned question, for per-answer feedback.
+  const turn = { who, text, qIndex: iv.qIndex };
+  iv.log.push(turn);
   saveSession();
-  renderTurn(who, text);
+  renderTurn(turn, iv);
 }
 
-function renderTurn(who, text) {
+function renderTurn(turn, session) {
   const div = document.createElement('div');
-  div.className = 'turn ' + (who === 'Interviewer' ? 'interviewer' : 'you');
+  div.className = 'turn ' + (turn.who === 'Interviewer' ? 'interviewer' : 'you');
   div.innerHTML = '<div class="who"></div><div class="body"></div>';
-  div.querySelector('.who').textContent = who;
-  div.querySelector('.body').textContent = text;
+  div.querySelector('.who').textContent = turn.who;
+  div.querySelector('.body').textContent = turn.text;
+  if (turn.who === 'You') {
+    const area = document.createElement('div');
+    area.className = 'fb-area';
+    div.append(area);
+    renderAnswerFeedback(area, turn, session);
+  }
   $('log').prepend(div); // newest on top, next to the controls
+}
+
+// --- Per-answer feedback -----------------------------------------------------
+
+let feedbackInFlight = 0;
+
+// The planned question plus every turn on it, up to and including this answer.
+function feedbackThread(session, turn) {
+  const i = session.log.indexOf(turn);
+  if (turn.qIndex === undefined) {
+    // Older saved sessions: just the question right before the answer.
+    const q = session.log.slice(0, i).reverse().find((t) => t.who === 'Interviewer');
+    return q ? [q, turn] : [turn];
+  }
+  return session.log.slice(0, i + 1).filter((t) => t.qIndex === turn.qIndex);
+}
+
+function renderAnswerFeedback(area, turn, session) {
+  area.innerHTML = '';
+  if (turn.feedback) return area.append(feedbackCard(turn.feedback));
+  const btn = document.createElement('button');
+  btn.className = 'link';
+  btn.textContent = 'Get feedback';
+  btn.addEventListener('click', () => getAnswerFeedback(area, turn, session, btn));
+  area.append(btn);
+}
+
+async function getAnswerFeedback(area, turn, session, btn) {
+  btn.blur(); // keep Space for the interview
+  btn.disabled = true;
+  btn.textContent = 'Getting feedback… (can take up to a minute)';
+  area.querySelector('.error')?.remove();
+  feedbackInFlight++;
+  try {
+    const text = await chat(
+      P.answerFeedbackSystem({ role: plan.role, jobSpec: plan.jobSpec }),
+      [{ role: 'user', content: P.answerFeedbackUser({ plannedQuestion: plan.questions[turn.qIndex], thread: feedbackThread(session, turn) }) }],
+      32000,
+      'feedback',
+    );
+    turn.feedback = parseJson(text);
+    if (session === iv) saveSession();
+    if (area.isConnected) renderAnswerFeedback(area, turn, session);
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = 'Try again';
+    const err = document.createElement('div');
+    err.className = 'error';
+    err.textContent = 'Feedback failed: ' + e.message;
+    area.append(err);
+  } finally {
+    feedbackInFlight--;
+  }
+}
+
+function feedbackCard(fb) {
+  const el = (tag, cls, text) => {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined) n.textContent = text;
+    return n;
+  };
+  const list = (title, items, fn) => {
+    if (!items?.length) return null;
+    const sec = el('div', 'fb-sec');
+    sec.append(el('h3', '', title));
+    const ul = el('ul');
+    for (const it of items) { const li = el('li'); fn(li, it); ul.append(li); }
+    sec.append(ul);
+    return sec;
+  };
+
+  const card = el('details', 'fb');
+  card.open = true;
+  const sum = el('summary');
+  const rating = String(fb.rating || '').toLowerCase();
+  sum.append(el('span', 'rating ' + rating, rating || 'feedback'), el('span', 'fb-summary', fb.summary || ''));
+  card.append(sum);
+
+  const parts = [
+    list('What worked', fb.strengths, (li, s) => { li.textContent = s; }),
+    list('What was missing', fb.gaps, (li, s) => { li.textContent = s; }),
+    list('Details to add', fb.missing_details, (li, d) => {
+      if (typeof d === 'string') { li.textContent = d; return; }
+      li.append(el('strong', '', d.point + ': '), document.createTextNode(d.explanation || ''));
+    }),
+  ];
+  if (fb.improved_answer) {
+    const sec = el('div', 'fb-sec');
+    sec.append(el('h3', '', 'A stronger answer'), el('blockquote', '', fb.improved_answer));
+    parts.push(sec);
+  }
+  if (fb.tip) {
+    const sec = el('div', 'fb-sec');
+    sec.append(el('h3', '', 'Tip'), el('p', '', fb.tip));
+    parts.push(sec);
+  }
+  card.append(...parts.filter(Boolean));
+  return card;
 }
 
 function show(section) {
@@ -608,12 +720,12 @@ $('feedbackBtn').addEventListener('click', async () => {
   const btn = $('feedbackBtn');
   if (!iv?.log.length) return;
   btn.disabled = true;
-  btn.textContent = 'Writing feedback…';
+  btn.textContent = 'Writing overall feedback… (can take a minute)';
   $('feedback').hidden = false;
   $('feedbackText').textContent = '';
   try {
     const transcript = iv.log.map((t) => `${t.who === 'You' ? 'Candidate' : 'Interviewer'}: ${t.text}`).join('\n\n');
-    const text = await chat(P.feedbackSystem, [{ role: 'user', content: P.feedbackUser({ role: plan.role, transcript }) }], 8000);
+    const text = await chat(P.feedbackSystem, [{ role: 'user', content: P.feedbackUser({ role: plan.role, transcript }) }], 32000, 'feedback');
     $('feedbackText').textContent = text;
     store.set('feedback', text);
     $('feedback').scrollIntoView({ behavior: 'smooth' });
@@ -621,7 +733,7 @@ $('feedbackBtn').addEventListener('click', async () => {
     $('feedbackText').textContent = 'Feedback failed: ' + e.message;
   } finally {
     btn.disabled = false;
-    btn.textContent = 'Get feedback';
+    btn.textContent = 'Overall feedback';
   }
 });
 
@@ -650,7 +762,7 @@ function restoreSession() {
   iv = saved;
   show('interview');
   $('log').innerHTML = '';
-  for (const t of iv.log) renderTurn(t.who, t.text);
+  for (const t of iv.log) renderTurn(t, iv);
   if (feedback) { $('feedback').hidden = false; $('feedbackText').textContent = feedback; }
 
   // A refresh during the closing line: treat the interview as finished.
@@ -731,7 +843,7 @@ let reloadPending = false;
 // The session itself is saved, so only in-flight work (a recording, a model
 // call, speech) would be lost.
 function safeToReload() {
-  return ['idle', 'done'].includes(state) && !$('genBtn').disabled && !$('feedbackBtn').disabled;
+  return ['idle', 'done'].includes(state) && !$('genBtn').disabled && !$('feedbackBtn').disabled && feedbackInFlight === 0;
 }
 function requestReload() {
   if (safeToReload()) return location.reload();
