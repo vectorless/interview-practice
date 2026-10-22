@@ -621,6 +621,25 @@ document.addEventListener('keyup', (e) => {
 // Boot
 // ===========================================================================
 
+// Live reload when files in public/ change. Never mid-interview or while
+// questions are generating: wait until it's safe, so nothing is lost.
+let reloadPending = false;
+function safeToReload() {
+  return $('interview').hidden && !$('genBtn').disabled;
+}
+function requestReload() {
+  if (safeToReload()) return location.reload();
+  if (reloadPending) return;
+  reloadPending = true;
+  $('reloadNote').hidden = false;
+  const wait = setInterval(() => {
+    if (safeToReload()) { clearInterval(wait); location.reload(); }
+  }, 500);
+}
+if ('EventSource' in window) {
+  new EventSource('/api/live').onmessage = (e) => { if (e.data === 'reload') requestReload(); };
+}
+
 if ('speechSynthesis' in window) speechSynthesis.getVoices(); // warm up voice list
 renderPlan();
 loadConfig().catch((e) => { $('genError').textContent = 'Could not reach the local server: ' + e.message; });

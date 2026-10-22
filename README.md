@@ -8,8 +8,10 @@ Needs Node 18 or newer. No `npm install`.
 
 ```bash
 cp .env.example .env     # then add your keys
-node server.js
+npm run dev              # or: node server.js
 ```
+
+`npm run dev` restarts the server whenever `server.js` changes (Node's built-in `--watch`), and open pages reload whenever anything in `public/` changes. A page won't reload mid-interview or while questions are generating; it shows "Update ready" and reloads when you go back to setup. `.env` changes never need a restart.
 
 Open http://localhost:3456 in Chrome or Edge (best mic/speech support).
 

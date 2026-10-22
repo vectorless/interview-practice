@@ -353,8 +353,41 @@ function serveStatic(res, pathname) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Live reload: tell open pages to reload when anything in public/ changes.
+// (Server code itself is reloaded by `node --watch`, see `npm run dev`.)
+// ---------------------------------------------------------------------------
+
+const liveClients = new Set();
+
+function handleLive(req, res) {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-store',
+    Connection: 'keep-alive',
+  });
+  res.write('retry: 1000\n\n');
+  liveClients.add(res);
+  const ping = setInterval(() => res.write(': ping\n\n'), 25000);
+  req.on('close', () => { clearInterval(ping); liveClients.delete(res); });
+}
+
+let reloadTimer = null;
+try {
+  fs.watch(PUBLIC_DIR, { recursive: true }, (_event, file) => {
+    clearTimeout(reloadTimer); // editors often fire several events per save
+    reloadTimer = setTimeout(() => {
+      if (liveClients.size) console.log(`Changed ${file || 'public/'} — reloading ${liveClients.size} page(s)`);
+      for (const res of liveClients) res.write('data: reload\n\n');
+    }, 150);
+  });
+} catch (err) {
+  console.warn('Live reload unavailable:', err.message);
+}
+
 const server = http.createServer(async (req, res) => {
   const { pathname } = new URL(req.url, 'http://localhost');
+  if (pathname === '/api/live') return handleLive(req, res);
   if (!pathname.startsWith('/api/')) return serveStatic(res, pathname);
   try {
     await handleApi(req, res, pathname);
