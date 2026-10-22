@@ -41,6 +41,8 @@
   }
   button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
   button:disabled { opacity: .45; cursor: default; }
+  button.danger { color: var(--rec); border-color: var(--rec); }
+  button.danger.confirm { background: var(--rec); color: #fff; }
   .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
   .row .grow { flex: 1; }
   .muted { color: var(--muted); font-size: 13px; }
@@ -52,8 +54,8 @@
   .grid label { color: var(--muted); font-size: 13px; }
   .key-ok { color: var(--ok); }
   .key-missing { color: var(--muted); }
-  details { margin-top: 14px; }
-  summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  #settings details { margin-top: 14px; }
+  #settings summary { cursor: pointer; color: var(--muted); font-size: 13px; }
   details .grid { margin-top: 10px; }
   code { font-size: 12px; background: var(--bg); padding: 1px 5px; border-radius: 4px; border: 1px solid var(--line); }
 
@@ -61,8 +63,12 @@
   ol#questions { margin: 14px 0 0; padding-left: 22px; }
   ol#questions li { padding: 6px 0; border-top: 1px solid var(--line); }
   ol#questions li:first-child { border-top: 0; }
-  .q { display: flex; gap: 8px; align-items: flex-start; }
-  .q span.text { flex: 1; }
+  .q { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; list-style: none; }
+  .q::-webkit-details-marker { display: none; }
+  .q .topic { flex: 1; }
+  .q .topic::after { content: "▸"; color: var(--muted); font-size: 12px; margin-left: 8px; }
+  details[open] > .q .topic::after { content: "▾"; }
+  details .text { padding: 6px 0 2px; color: var(--muted); }
   .tag { font-size: 11px; padding: 1px 7px; border-radius: 10px; white-space: nowrap; margin-top: 2px; }
   .tag.technical { background: var(--tag-technical); }
   .tag.process { background: var(--tag-process); }
@@ -92,7 +98,7 @@
 <main>
   <header>
     <h1>Interview Practice</h1>
-    <span class="chips" id="reloadNote" hidden title="The app's code changed. It will reload when you go back to setup.">Update ready · reloads after interview</span>
+    <span class="chips" id="reloadNote" hidden title="The app's code changed. It will reload once nothing is in progress; your session is kept.">Update ready · reloads when idle</span>
     <span class="chips" id="chips"></span>
     <button id="settingsBtn">Settings</button>
   </header>
@@ -128,6 +134,10 @@
       <summary>Models and voices</summary>
       <div class="grid" id="modelFields"></div>
     </details>
+
+    <h2 style="margin-top:18px">Your data</h2>
+    <p class="muted">The job spec, questions, interview transcript and feedback are saved in this browser, so they survive a refresh. Resetting clears them. Keys and provider settings are not affected.</p>
+    <div class="row"><button id="resetBtn" class="danger">Reset all data</button></div>
   </section>
 
   <section id="setup">
@@ -150,7 +160,7 @@
       <h2 style="margin-top:20px" id="planTitle">Questions</h2>
       <ol id="questions"></ol>
       <div class="row">
-        <span class="muted grow">The interviewer asks these in order and decides on follow-ups as you go.</span>
+        <span class="muted grow">Click a topic to see the question. Asked in order, with follow-ups as you go.</span>
         <button id="startBtn" class="primary">Start interview</button>
       </div>
     </div>

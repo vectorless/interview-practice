@@ -16,8 +16,10 @@ Mix of question types:
 
 Order them so the interview flows naturally: an easy opener, then technical depth, with process and relational questions spread through.
 
+Give each question a "topic": a two or three word label naming its subject without giving the question away (for example "Cache invalidation", "Config deployment", "Team conflict").
+
 Reply with JSON only, no prose, in exactly this shape:
-{"role": "<short role title>", "questions": [{"type": "technical" | "process" | "relational", "text": "<the question as spoken aloud>"}]}`;
+{"role": "<short role title>", "questions": [{"type": "technical" | "process" | "relational", "topic": "<2-3 words>", "text": "<the question as spoken aloud>"}]}`;
 
 export function questionPlanUser(jobSpec, count) {
   return `Job specification:\n"""\n${jobSpec}\n"""\n\nWrite ${count} questions.`;

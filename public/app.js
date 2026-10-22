@@ -232,14 +232,17 @@ function renderPlan() {
   $('planTitle').textContent = plan.role ? `Questions — ${plan.role}` : 'Questions';
   const ol = $('questions');
   ol.innerHTML = '';
+  // Collapsed by default: each question shows only its short topic until opened.
   plan.questions.forEach((q, i) => {
     const li = document.createElement('li');
-    li.innerHTML = `<div class="q"><span class="text"></span><span class="tag"></span><button title="Remove">×</button></div>`;
+    li.innerHTML = `<details><summary class="q"><span class="topic"></span><span class="tag"></span><button title="Remove">×</button></summary><div class="text"></div></details>`;
+    li.querySelector('.topic').textContent = q.topic || `${q.type[0].toUpperCase()}${q.type.slice(1)} question`;
     li.querySelector('.text').textContent = q.text;
     const tag = li.querySelector('.tag');
     tag.textContent = q.type;
     tag.classList.add(q.type);
-    li.querySelector('button').addEventListener('click', () => {
+    li.querySelector('button').addEventListener('click', (e) => {
+      e.preventDefault(); // don't toggle the accordion
       plan.questions.splice(i, 1);
       store.set('plan', plan);
       renderPlan();
@@ -447,8 +450,16 @@ function setState(s, text) {
 
 function showError(msg) { $('ivError').textContent = msg || ''; }
 
+// --- Persistence: the session survives refreshes -----------------------------
+function saveSession() { if (iv) store.set('session', iv); }
+
 function addLog(who, text) {
   iv.log.push({ who, text });
+  saveSession();
+  renderTurn(who, text);
+}
+
+function renderTurn(who, text) {
   const div = document.createElement('div');
   div.className = 'turn ' + (who === 'Interviewer' ? 'interviewer' : 'you');
   div.innerHTML = '<div class="who"></div><div class="body"></div>';
@@ -460,12 +471,16 @@ function addLog(who, text) {
 function show(section) {
   // Feedback is revealed separately, under the interview, once requested.
   for (const id of ['setup', 'interview', 'feedback']) $(id).hidden = id !== section;
+  store.set('view', section);
 }
 
 async function startInterview() {
   if (!plan?.questions?.length) return;
   document.activeElement?.blur(); // so Space doesn't press a focused button
   iv = { log: [], history: [], qIndex: 0, followUps: 0, started: false, ended: false };
+  saveSession();
+  store.set('feedback', null);
+  $('feedbackText').textContent = '';
   $('log').innerHTML = '';
   $('live').textContent = '';
   $('afterRow').hidden = true;
@@ -488,6 +503,7 @@ async function interviewerTurn(userContent) {
   $('retryBtn').hidden = true;
   setState('thinking', 'Interviewer is thinking…');
   my.history.push({ role: 'user', content: userContent });
+  saveSession();
 
   let reply;
   try {
@@ -496,6 +512,7 @@ async function interviewerTurn(userContent) {
   } catch (e) {
     if (iv !== my || my.ended) return;
     my.history.pop();
+    saveSession();
     showError(e.message);
     setState('idle', 'Something went wrong');
     $('retryBtn').hidden = false;
@@ -513,8 +530,9 @@ async function interviewerTurn(userContent) {
     if (my.qIndex >= plan.questions.length) reply.action = 'end';
   }
   const ending = reply.action === 'end';
+  my.pendingEnd = ending; // so a refresh during the goodbye still ends cleanly
 
-  addLog('Interviewer', reply.say);
+  addLog('Interviewer', reply.say); // also saves
   setState('speaking', 'Interviewer speaking… <kbd>Space</kbd> to skip');
   try { await speak(reply.say); } catch (e) { showError('Speech failed: ' + e.message); }
   if (iv !== my || my.ended) return;
@@ -566,6 +584,7 @@ async function doneAnswering() {
 function finishInterview() {
   if (!iv) return;
   iv.ended = true;
+  saveSession();
   listener?.abort();
   listener = null;
   stopCurrentSpeech?.();
@@ -594,7 +613,9 @@ $('feedbackBtn').addEventListener('click', async () => {
   $('feedbackText').textContent = '';
   try {
     const transcript = iv.log.map((t) => `${t.who === 'You' ? 'Candidate' : 'Interviewer'}: ${t.text}`).join('\n\n');
-    $('feedbackText').textContent = await chat(P.feedbackSystem, [{ role: 'user', content: P.feedbackUser({ role: plan.role, transcript }) }], 8000);
+    const text = await chat(P.feedbackSystem, [{ role: 'user', content: P.feedbackUser({ role: plan.role, transcript }) }], 8000);
+    $('feedbackText').textContent = text;
+    store.set('feedback', text);
     $('feedback').scrollIntoView({ behavior: 'smooth' });
   } catch (e) {
     $('feedbackText').textContent = 'Feedback failed: ' + e.message;
@@ -618,14 +639,99 @@ document.addEventListener('keyup', (e) => {
 });
 
 // ===========================================================================
+// Restore after a refresh, and reset
+// ===========================================================================
+
+function restoreSession() {
+  const saved = store.get('session');
+  const feedback = store.get('feedback');
+  if (store.get('view') !== 'interview' || !saved?.log || !plan?.questions?.length) return;
+
+  iv = saved;
+  show('interview');
+  $('log').innerHTML = '';
+  for (const t of iv.log) renderTurn(t.who, t.text);
+  if (feedback) { $('feedback').hidden = false; $('feedbackText').textContent = feedback; }
+
+  // A refresh during the closing line: treat the interview as finished.
+  const last = iv.history.at(-1);
+  if (!iv.ended && iv.pendingEnd && last?.role === 'assistant') iv.ended = true;
+
+  if (iv.ended) {
+    setState('done', 'Interview finished');
+    $('afterRow').hidden = false;
+    $('endBtn').hidden = true;
+    return;
+  }
+  setState('idle', 'Interview paused by a page reload');
+  $('retryBtn').textContent = 'Resume';
+  $('retryBtn').hidden = false;
+  $('retryBtn').onclick = resumeInterview;
+}
+
+async function resumeInterview() {
+  $('retryBtn').hidden = true;
+  $('retryBtn').textContent = 'Retry';
+  showError('');
+  try {
+    await ensureMic();
+  } catch {
+    showError('Microphone access was denied. Allow it in the browser and try again.');
+    setState('idle', 'No microphone');
+    $('retryBtn').textContent = 'Resume';
+    $('retryBtn').hidden = false;
+    return;
+  }
+  const last = iv.history.at(-1);
+  if (last?.role === 'user') {
+    // The interviewer hadn't replied yet: ask again.
+    iv.history.pop();
+    return interviewerTurn(last.content);
+  }
+  if (!last) return interviewerTurn(P.kickoffMessage(plan.questions[0]));
+  // The interviewer's question is the newest line in the log: answer it.
+  startListening('Answer the interviewer’s last question.');
+}
+
+// Two clicks to reset, so it can't happen by accident.
+let resetArmed = null;
+$('resetBtn').addEventListener('click', () => {
+  const btn = $('resetBtn');
+  if (!resetArmed) {
+    btn.textContent = 'Click again to erase everything';
+    btn.classList.add('confirm');
+    resetArmed = setTimeout(() => {
+      resetArmed = null;
+      btn.textContent = 'Reset all data';
+      btn.classList.remove('confirm');
+    }, 4000);
+    return;
+  }
+  clearTimeout(resetArmed);
+  if (iv) iv.ended = true; // stop any in-flight turn from saving again
+  listener?.abort();
+  stopCurrentSpeech?.();
+  for (const k of ['jobSpec', 'plan', 'qCount', 'session', 'feedback', 'view']) {
+    try { localStorage.removeItem(k); } catch { /* ignore */ }
+  }
+  location.reload();
+});
+
+// Question count is remembered too.
+if (store.get('qCount')) $('qCount').value = String(store.get('qCount'));
+$('qCount').addEventListener('change', () => store.set('qCount', $('qCount').value));
+
+// ===========================================================================
 // Boot
 // ===========================================================================
 
 // Live reload when files in public/ change. Never mid-interview or while
 // questions are generating: wait until it's safe, so nothing is lost.
 let reloadPending = false;
+// The session itself is saved, so only in-flight work (a recording, a model
+// call, speech) would be lost.
 function safeToReload() {
-  return $('interview').hidden && !$('genBtn').disabled;
+  return ['idle', 'done'].includes(state) && !$('genBtn').disabled && !$('feedbackBtn').disabled;
 }
 function requestReload() {
   if (safeToReload()) return location.reload();
@@ -642,4 +748,5 @@ if ('EventSource' in window) {
 
 if ('speechSynthesis' in window) speechSynthesis.getVoices(); // warm up voice list
 renderPlan();
+restoreSession();
 loadConfig().catch((e) => { $('genError').textContent = 'Could not reach the local server: ' + e.message; });

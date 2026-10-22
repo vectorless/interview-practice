@@ -37,6 +37,8 @@ You can also start with no speech keys at all: the **Browser** STT/TTS options a
 - **Space** while you're answering: finish your answer.
 - **Space** while the interviewer is talking: skip to answering.
 - **End interview** stops at any point; **Get feedback** reviews the transcript.
+- Questions are collapsed under short topic labels; click one to see the question.
+- Your job spec, questions, transcript and feedback are saved in the browser (localStorage) and survive a refresh. If you refresh mid-interview, press **Resume** to carry on from the last question. **Settings → Reset all data** clears it all (keys and provider settings are kept).
 
 ## Files
 
