@@ -292,6 +292,31 @@ $('genBtn').addEventListener('click', async () => {
 
 let stopCurrentSpeech = null;
 
+// Browsers only allow audio to start soon after a click. The interviewer
+// speaks several seconds after Start (mic, model call, TTS download), so we
+// unlock a single audio element during the click and reuse it for every line.
+const player = new Audio();
+let silentUrl = null;
+let currentUtterance = null; // keep a reference: Chrome drops speech whose utterance is garbage-collected
+
+function unlockAudio() {
+  try {
+    silentUrl ??= URL.createObjectURL(encodeWav(new Float32Array(1600), 16000)); // 0.1s of silence
+    player.src = silentUrl;
+    player.play().catch(() => { /* still locked; speak() will offer a Play button */ });
+  } catch { /* ignore */ }
+  try {
+    if ('speechSynthesis' in window) speechSynthesis.speak(new SpeechSynthesisUtterance(''));
+  } catch { /* ignore */ }
+}
+
+// Shown when the browser refuses to start audio by itself; a click always works.
+function offerPlay(play) {
+  $('playBtn').hidden = false;
+  $('playBtn').onclick = () => { $('playBtn').hidden = true; play(); };
+  if (state === 'speaking') $('statusText').innerHTML = 'The browser blocked the audio — click <b>Play question</b>, or <kbd>Space</kbd> to skip';
+}
+
 function speak(text) {
   return config.providers.tts === 'browser' ? speakBrowser(text) : speakServer(text);
 }
@@ -299,33 +324,57 @@ function speak(text) {
 function speakBrowser(text) {
   return new Promise((resolve) => {
     const u = new SpeechSynthesisUtterance(text);
+    currentUtterance = u;
     const voices = speechSynthesis.getVoices().filter((v) => v.lang.startsWith('en'));
     u.voice = voices.find((v) => v.default) || voices[0] || null;
     u.rate = 1.02;
-    const done = () => { stopCurrentSpeech = null; resolve(); };
+    let started = false;
+    let finished = false;
+    const done = () => {
+      if (finished) return;
+      finished = true;
+      stopCurrentSpeech = null;
+      $('playBtn').hidden = true;
+      resolve();
+    };
+    const say = () => { if (speechSynthesis.speaking || speechSynthesis.pending) speechSynthesis.cancel(); speechSynthesis.speak(u); };
+    u.onstart = () => { started = true; $('playBtn').hidden = true; };
     u.onend = done;
-    u.onerror = done;
-    stopCurrentSpeech = () => speechSynthesis.cancel();
-    speechSynthesis.cancel();
-    speechSynthesis.speak(u);
+    u.onerror = (e) => { if (e.error === 'not-allowed') offerPlay(say); else done(); };
+    stopCurrentSpeech = () => { speechSynthesis.cancel(); done(); };
+    say();
+    // Some browsers silently never start: offer the button rather than hang.
+    setTimeout(() => { if (!started && !finished) offerPlay(say); }, 3000);
   });
 }
 
 async function speakServer(text) {
   const blob = await (await postJson('/api/tts', { text })).blob();
   const url = URL.createObjectURL(blob);
-  return new Promise((resolve) => {
-    const audio = new Audio(url);
-    const done = () => {
-      stopCurrentSpeech = null;
-      URL.revokeObjectURL(url);
-      resolve();
-    };
-    audio.onended = done;
-    audio.onerror = done;
-    stopCurrentSpeech = () => { audio.pause(); done(); };
-    audio.play().catch(done);
-  });
+  try {
+    await new Promise((resolve) => {
+      let finished = false;
+      const done = () => {
+        if (finished) return;
+        finished = true;
+        player.onended = player.onerror = null;
+        stopCurrentSpeech = null;
+        $('playBtn').hidden = true;
+        resolve();
+      };
+      player.onended = done;
+      player.onerror = done;
+      stopCurrentSpeech = () => { player.pause(); done(); };
+      player.src = url;
+      player.play().catch((err) => {
+        if (finished) return;
+        console.warn('Audio play blocked:', err.message);
+        offerPlay(() => player.play().catch(done));
+      });
+    });
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 // ===========================================================================
@@ -430,8 +479,11 @@ async function toWav(blob) {
   src.buffer = decoded;
   src.connect(off.destination);
   src.start();
-  const pcm = (await off.startRendering()).getChannelData(0);
+  return encodeWav((await off.startRendering()).getChannelData(0), rate);
+}
 
+// 16-bit mono PCM WAV from float samples.
+function encodeWav(pcm, rate) {
   const view = new DataView(new ArrayBuffer(44 + pcm.length * 2));
   const str = (o, s) => { for (let i = 0; i < s.length; i++) view.setUint8(o + i, s.charCodeAt(i)); };
   str(0, 'RIFF'); view.setUint32(4, 36 + pcm.length * 2, true); str(8, 'WAVE');
@@ -456,6 +508,8 @@ let listener = null;
 function setState(s, text) {
   state = s;
   $('status').dataset.state = s;
+  $('face').dataset.state = s;
+  $('playBtn').hidden = true;
   $('statusText').innerHTML = text;
   $('meter').hidden = s !== 'listening';
   $('doneBtn').disabled = s !== 'listening';
@@ -466,19 +520,43 @@ function showError(msg) { $('ivError').textContent = msg || ''; }
 // --- Persistence: the session survives refreshes -----------------------------
 function saveSession() { if (iv) store.set('session', iv); }
 
-function addLog(who, text) {
+function addLog(who, text, action) {
   // qIndex ties each line to its planned question, for per-answer feedback.
-  const turn = { who, text, qIndex: iv.qIndex };
+  const turn = { who, text, qIndex: iv.qIndex, action };
   iv.log.push(turn);
   saveSession();
   renderTurn(turn, iv);
 }
 
+// Short label shown while a line is collapsed.
+function turnLabel(turn) {
+  if (turn.who === 'You') {
+    const n = turn.text.trim().split(/\s+/).filter(Boolean).length;
+    return `${n} word${n === 1 ? '' : 's'}`;
+  }
+  if (turn.action === 'end') return 'Closing';
+  if (turn.action === 'follow_up') return 'Follow-up';
+  if (turn.qIndex === undefined) return '';
+  const q = plan?.questions?.[turn.qIndex];
+  return `Question ${turn.qIndex + 1}${q?.topic ? ' · ' + q.topic : ''}`;
+}
+
+// Transcript lines are collapsed by default (you listen rather than read).
+let transcriptOpen = Boolean(store.get('transcriptOpen'));
+function setTranscriptOpen(open) {
+  transcriptOpen = open;
+  store.set('transcriptOpen', open);
+  $('toggleText').textContent = open ? 'Hide all text' : 'Show all text';
+  for (const d of document.querySelectorAll('#log details.line')) d.open = open;
+}
+
 function renderTurn(turn, session) {
   const div = document.createElement('div');
   div.className = 'turn ' + (turn.who === 'Interviewer' ? 'interviewer' : 'you');
-  div.innerHTML = '<div class="who"></div><div class="body"></div>';
+  div.innerHTML = '<details class="line"><summary><span class="who"></span><span class="label"></span></summary><div class="body"></div></details>';
+  div.querySelector('.line').open = transcriptOpen;
   div.querySelector('.who').textContent = turn.who;
+  div.querySelector('.label').textContent = turnLabel(turn);
   div.querySelector('.body').textContent = turn.text;
   if (turn.who === 'You') {
     const area = document.createElement('div');
@@ -596,6 +674,7 @@ function show(section) {
 
 async function startInterview() {
   if (!plan?.questions?.length) return;
+  unlockAudio(); // must happen inside the click, before any await
   document.activeElement?.blur(); // so Space doesn't press a focused button
   iv = { log: [], history: [], qIndex: 0, followUps: 0, started: false, ended: false };
   saveSession();
@@ -636,7 +715,7 @@ async function interviewerTurn(userContent) {
     showError(e.message);
     setState('idle', 'Something went wrong');
     $('retryBtn').hidden = false;
-    $('retryBtn').onclick = () => { showError(''); interviewerTurn(userContent); };
+    $('retryBtn').onclick = () => { unlockAudio(); showError(''); interviewerTurn(userContent); };
     return;
   }
   if (iv !== my || my.ended) return;
@@ -652,7 +731,7 @@ async function interviewerTurn(userContent) {
   const ending = reply.action === 'end';
   my.pendingEnd = ending; // so a refresh during the goodbye still ends cleanly
 
-  addLog('Interviewer', reply.say); // also saves
+  addLog('Interviewer', reply.say, reply.action); // also saves
   setState('speaking', 'Interviewer speaking… <kbd>Space</kbd> to skip');
   try { await speak(reply.say); } catch (e) { showError('Speech failed: ' + e.message); }
   if (iv !== my || my.ended) return;
@@ -758,6 +837,52 @@ document.addEventListener('keyup', (e) => {
   if (e.code === 'Space' && !$('interview').hidden && !isTyping(e.target)) e.preventDefault();
 });
 
+$('toggleText').addEventListener('click', () => setTranscriptOpen(!transcriptOpen));
+$('toggleText').textContent = transcriptOpen ? 'Hide all text' : 'Show all text';
+
+// ===========================================================================
+// The interviewer's "video" tile: a line-drawn face that blinks, glances away
+// while thinking, nods while listening and moves its mouth while speaking.
+// ===========================================================================
+
+const face = $('face');
+(function blink() {
+  setTimeout(() => {
+    face.classList.add('blink');
+    setTimeout(() => face.classList.remove('blink'), 140);
+    blink();
+  }, 2500 + Math.random() * 3500);
+})();
+
+function audioPlaying() {
+  if (config?.providers.tts === 'browser') return 'speechSynthesis' in window && speechSynthesis.speaking;
+  return !player.paused && !player.ended && player.src !== silentUrl;
+}
+
+let mouthLevel = 0;
+setInterval(() => {
+  if ($('interview').hidden) return;
+  const talking = state === 'speaking' && audioPlaying();
+  // Speech-like movement: jump to a random openness, with smoothing.
+  const target = talking ? (Math.random() < 0.15 ? 0.1 : 0.3 + Math.random() * 0.7) : 0;
+  mouthLevel += (target - mouthLevel) * 0.6;
+  $('faceMouth').setAttribute('ry', (1.2 + mouthLevel * 7).toFixed(2));
+  $('faceMouth').setAttribute('rx', (11 - mouthLevel * 2).toFixed(2));
+}, 90);
+
+// Settings: hear the current voice on its own.
+$('testVoiceBtn').addEventListener('click', async () => {
+  const status = $('testVoiceStatus');
+  unlockAudio();
+  status.textContent = 'Speaking…';
+  try {
+    await speak('Hi, thanks for joining. This is how I will sound during the interview.');
+    status.textContent = 'Done. If you heard nothing, check your volume and output device.';
+  } catch (e) {
+    status.textContent = 'Speech failed: ' + e.message;
+  }
+});
+
 // ===========================================================================
 // Restore after a refresh, and reset
 // ===========================================================================
@@ -790,6 +915,7 @@ function restoreSession() {
 }
 
 async function resumeInterview() {
+  unlockAudio();
   $('retryBtn').hidden = true;
   $('retryBtn').textContent = 'Retry';
   showError('');

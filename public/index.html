@@ -89,9 +89,45 @@
   .meter { width: 70px; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
   .meter i { display: block; height: 100%; width: 0; background: var(--rec); transition: width 80ms linear; }
   #live { color: var(--muted); font-style: italic; min-height: 1.5em; margin-top: 10px; }
-  #log { margin-top: 14px; display: flex; flex-direction: column; gap: 12px; }
-  .turn .who { font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 2px; }
+  #live:empty { display: none; }
+  .log-head { margin-top: 6px; }
+  #log { margin-top: 4px; display: flex; flex-direction: column; gap: 10px; }
+  .turn .who { font-size: 12px; font-weight: 600; color: var(--muted); }
   .turn.interviewer .who { color: var(--accent); }
+  .line > summary { display: flex; gap: 8px; align-items: baseline; cursor: pointer; list-style: none; }
+  .line > summary::-webkit-details-marker { display: none; }
+  .line .label { color: var(--muted); font-size: 13px; }
+  .line .label::after { content: "▸"; font-size: 11px; margin-left: 6px; }
+  .line[open] .label::after { content: "▾"; }
+  .line .body { margin-top: 2px; }
+
+  /* interviewer "video" tile */
+  .video {
+    position: relative; overflow: hidden; border-radius: 10px; margin-bottom: 12px;
+    aspect-ratio: 16 / 9; max-height: 300px; width: 100%;
+    background: radial-gradient(ellipse at 50% 40%, #2a3038, #15181c 75%);
+    transition: box-shadow .2s;
+  }
+  .video svg { display: block; width: 100%; height: 100%; }
+  .video svg path, .video svg ellipse { fill: none; stroke: #c9d1da; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .video .eyes ellipse { fill: #c9d1da; stroke: none; }
+  .video .head { transform-box: view-box; transform-origin: 160px 120px; transition: transform .5s ease; }
+  .video .gaze { transition: transform .4s ease; }
+  .video .eyes { transform-box: fill-box; transform-origin: center; transition: transform .08s; }
+  .video.blink .eyes { transform: scaleY(.1); }
+  .video[data-state="thinking"] .head { transform: rotate(-3deg); }
+  .video[data-state="thinking"] .gaze { transform: translate(4px, -3px); }
+  .video[data-state="listening"] .head { animation: nod 4.5s ease-in-out infinite; }
+  .video[data-state="speaking"] { box-shadow: inset 0 0 0 3px var(--accent); }
+  @keyframes nod { 0%, 60%, 100% { transform: none; } 70% { transform: translateY(2px) rotate(1deg); } 80% { transform: none; } 88% { transform: translateY(1.5px); } }
+  .video .name { position: absolute; left: 10px; bottom: 8px; font-size: 12px; color: #e5e7eb; background: rgba(0,0,0,.5); padding: 2px 8px; border-radius: 4px; }
+  .video .you {
+    position: absolute; right: 10px; bottom: 10px; width: 18%; min-width: 72px; aspect-ratio: 16 / 9;
+    display: grid; place-items: center; font-size: 12px; color: #9aa3ad;
+    background: #22262c; border: 1px solid #343a42; border-radius: 6px; transition: box-shadow .2s;
+  }
+  .video[data-state="listening"] .you { box-shadow: 0 0 0 2px var(--rec); color: #e5e7eb; }
+  @media (prefers-reduced-motion: reduce) { .video[data-state="listening"] .head { animation: none; } }
   #feedbackText { white-space: pre-wrap; }
 
   /* per-answer feedback */
@@ -143,6 +179,7 @@
         <option value="xai">xAI (Grok)</option>
       </select>
     </div>
+    <div class="row"><button id="testVoiceBtn">Test voice</button><span id="testVoiceStatus" class="muted"></span></div>
 
     <h2 style="margin-top:18px">API keys</h2>
     <div class="grid" id="keyStatus"></div>
@@ -186,6 +223,29 @@
   </section>
 
   <section id="interview" hidden>
+    <div class="video" id="face" data-state="idle">
+      <svg viewBox="0 0 320 180" aria-hidden="true">
+        <g class="person">
+          <path d="M78 180 C86 146 118 134 145 131 L175 131 C202 134 234 146 242 180"/>
+          <path d="M147 112 L147 131 M173 112 L173 131"/>
+          <g class="head">
+            <ellipse cx="160" cy="76" rx="34" ry="42"/>
+            <path d="M127 74 C119 42 140 27 163 28 C186 29 202 45 193 74"/>
+            <path d="M128 62 C134 48 148 42 158 40 C166 48 182 50 192 60"/>
+            <path d="M126 74 C119 72 118 86 126 88 M194 74 C201 72 202 86 194 88"/>
+            <path d="M140 67 Q147 64 154 67 M166 67 Q173 64 180 67"/>
+            <g class="gaze"><g class="eyes">
+              <ellipse cx="147" cy="76" rx="3.6" ry="2.6"/>
+              <ellipse cx="173" cy="76" rx="3.6" ry="2.6"/>
+            </g></g>
+            <path d="M160 80 L157 92 L162 92"/>
+            <ellipse id="faceMouth" cx="160" cy="103" rx="11" ry="1.2"/>
+          </g>
+        </g>
+      </svg>
+      <span class="name">Interviewer</span>
+      <span class="you">You</span>
+    </div>
     <div class="status" id="status" data-state="idle">
       <span class="dot"></span>
       <span class="text" id="statusText">Ready</span>
@@ -194,11 +254,13 @@
     <div id="live"></div>
     <div class="row">
       <button id="doneBtn" class="primary" disabled>Done answering <kbd>Space</kbd></button>
+      <button id="playBtn" class="primary" hidden>▶ Play question</button>
       <button id="retryBtn" hidden>Retry</button>
       <span class="grow"></span>
       <button id="endBtn">End interview</button>
     </div>
     <div id="ivError" class="error"></div>
+    <div class="row log-head"><span class="grow"></span><button id="toggleText" class="link">Show all text</button></div>
     <div id="log"></div>
     <div class="row" id="afterRow" hidden>
       <button id="feedbackBtn" class="primary">Overall feedback</button>
