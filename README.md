@@ -29,6 +29,7 @@ You can also start with no speech keys at all: the **Browser** STT/TTS options a
 
 ## Using it
 
+- **Job spec**: paste it, click **Upload PDF**, or drop a PDF/text file onto the box. Text is extracted in the browser (pdf.js, loaded from jsDelivr on first use) and shown so you can tidy it before generating. Scanned PDFs with no text layer can't be read; copy the text in instead.
 - **Settings**: pick a provider for inference, STT and TTS. Options without a key are disabled. Model names, effort and voices are under *Models and voices*. These choices are saved to `config.json`.
 - **Space** while you're answering: finish your answer.
 - **Space** while the interviewer is talking: skip to answering.

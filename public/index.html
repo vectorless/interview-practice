@@ -34,6 +34,7 @@
     border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px;
   }
   textarea { min-height: 160px; resize: vertical; }
+  textarea.dragover { border-color: var(--accent); outline: 2px dashed var(--accent); outline-offset: -4px; }
   button {
     font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text);
     border-radius: 6px; padding: 7px 14px; cursor: pointer;
@@ -130,15 +131,18 @@
 
   <section id="setup">
     <h2>Job spec</h2>
-    <textarea id="jobSpec" placeholder="Paste the job description here…"></textarea>
+    <textarea id="jobSpec" placeholder="Paste the job description here, or drop a PDF onto this box…"></textarea>
     <div class="row">
+      <button id="uploadBtn" type="button">Upload PDF</button>
+      <input id="fileInput" type="file" accept="application/pdf,.pdf,.txt,.md,text/plain" hidden>
+      <span class="grow"></span>
       <label class="muted" for="qCount">Questions</label>
       <select id="qCount" style="width:auto">
         <option>5</option><option>6</option><option selected>8</option><option>10</option><option>12</option>
       </select>
-      <span class="grow"></span>
       <button id="genBtn" class="primary">Generate questions</button>
     </div>
+    <div id="fileStatus" class="muted" style="margin-top:8px"></div>
     <div id="genError" class="error"></div>
 
     <div id="plan" hidden>

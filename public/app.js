@@ -134,6 +134,88 @@ let plan = store.get('plan');
 $('jobSpec').value = store.get('jobSpec') || '';
 $('jobSpec').addEventListener('input', () => store.set('jobSpec', $('jobSpec').value));
 
+// --- Job spec from a file (PDF, or plain text) ------------------------------
+// Text is extracted in the browser and placed in the textarea, so it can be
+// checked/edited and works the same with every inference provider.
+
+const PDFJS = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/';
+let pdfjsLib = null;
+
+async function pdfToText(file) {
+  if (!pdfjsLib) {
+    pdfjsLib = await import(PDFJS + 'pdf.min.mjs');
+    pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS + 'pdf.worker.min.mjs';
+  }
+  const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+  const pages = [];
+  for (let n = 1; n <= pdf.numPages; n++) {
+    const content = await (await pdf.getPage(n)).getTextContent();
+    let text = '';
+    for (const item of content.items) {
+      if (!('str' in item)) continue;
+      text += item.str + (item.hasEOL ? '\n' : (item.str && !item.str.endsWith(' ') ? ' ' : ''));
+    }
+    pages.push(text);
+  }
+  await pdf.destroy();
+  return pages.join('\n\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+async function loadSpecFile(file) {
+  if (!file) return;
+  const status = $('fileStatus');
+  $('genError').textContent = '';
+  const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+  const isText = file.type.startsWith('text/') || /\.(txt|md)$/i.test(file.name);
+  if (!isPdf && !isText) {
+    status.textContent = '';
+    $('genError').textContent = 'Please choose a PDF or a text file.';
+    return;
+  }
+
+  status.textContent = `Reading ${file.name}…`;
+  try {
+    const text = isPdf ? await pdfToText(file) : (await file.text()).trim();
+    if (!text) throw new Error('No text found. If it’s a scanned PDF, copy the text in instead.');
+    $('jobSpec').value = text;
+    store.set('jobSpec', text);
+    status.textContent = `Loaded ${file.name} — check the text, then generate questions.`;
+  } catch (e) {
+    status.textContent = '';
+    const offline = /import|fetch|Failed to load|dynamically imported/i.test(e.message);
+    $('genError').textContent = offline
+      ? 'Could not load the PDF reader (needs an internet connection). ' + e.message
+      : `Could not read ${file.name}: ${e.message}`;
+  }
+}
+
+$('uploadBtn').addEventListener('click', () => $('fileInput').click());
+$('fileInput').addEventListener('change', (e) => {
+  loadSpecFile(e.target.files[0]);
+  e.target.value = ''; // allow re-selecting the same file
+});
+
+const specBox = $('jobSpec');
+specBox.addEventListener('dragover', (e) => {
+  if (![...e.dataTransfer.types].includes('Files')) return;
+  e.preventDefault();
+  specBox.classList.add('dragover');
+});
+specBox.addEventListener('dragleave', () => specBox.classList.remove('dragover'));
+specBox.addEventListener('drop', (e) => {
+  if (!e.dataTransfer.files.length) return;
+  e.preventDefault();
+  specBox.classList.remove('dragover');
+  loadSpecFile(e.dataTransfer.files[0]);
+});
+// A file dropped outside the box shouldn't make the browser navigate away.
+window.addEventListener('dragover', (e) => e.preventDefault());
+window.addEventListener('drop', (e) => e.preventDefault());
+
 function renderPlan() {
   $('plan').hidden = !plan?.questions?.length;
   if (!plan) return;
