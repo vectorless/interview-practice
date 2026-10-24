@@ -4,7 +4,7 @@ A small local app for rehearsing spoken job interviews. Paste a job spec, get a 
 
 ![Walkthrough: settings, uploading a job spec, generating questions, one spoken answer, and feedback](demo/walkthrough.gif)
 
-*Condensed walkthrough (waits are fast-forwarded): settings, uploading a job spec, generating questions, one spoken answer, then ending the interview and getting feedback. [Download the full-length video](https://github.com/vectorless/interview-practice/raw/main/demo/walkthrough.mp4) (MP4, 3½ min, 11 MB).*
+*Condensed walkthrough (waits are fast-forwarded): settings, uploading a job spec, generating questions, one spoken answer, then ending the interview and getting feedback. [Download the full-length video with audio](https://github.com/vectorless/interview-practice/raw/main/demo/walkthrough.mp4) (MP4, 3½ min, 12 MB).*
 
 ## Run it
 
