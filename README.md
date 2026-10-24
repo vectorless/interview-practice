@@ -2,6 +2,10 @@
 
 A small local app for rehearsing spoken job interviews. Paste a job spec, get a question plan, then answer out loud. The interviewer speaks each question, listens until you press **Space**, and decides whether to follow up or move on. At the end you can ask for feedback.
 
+[![Watch the walkthrough: settings, uploading a job spec, generating questions, one spoken answer, and feedback](demo/main-page.png)](demo/walkthrough.mp4)
+
+*Click the image for a 3½-minute walkthrough (MP4): settings, uploading a job spec, generating questions, one spoken answer, then ending the interview and getting feedback.*
+
 ## Run it
 
 Needs Node 18 or newer. No `npm install`.
